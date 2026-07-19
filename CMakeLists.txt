@@ -38,6 +38,9 @@ set(YOLO_ONNX_SOURCES
     src/models/model_yolox.cpp
     src/models/model_v8.cpp
     src/models/model_ppyoloe.cpp
+    src/models/model_v8_segment.cpp
+    src/models/model_v8_pose.cpp
+    src/models/model_v8_obb.cpp
 )
 
 # ---- Library ----

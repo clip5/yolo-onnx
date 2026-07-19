@@ -17,12 +17,14 @@ public:
     struct Config {
         std::string model_path;        // Path to ONNX model
         ModelType   model_type   = ModelType::YOLOv8;
+        TaskType    task_type    = TaskType::Detect;
         std::string backend_type = "onnxruntime";  // backend name
         float       score_thresh = 0.5f;
         float       nms_thresh   = 0.45f;
         int         input_width  = 640;
         int         input_height = 640;
         int         num_classes  = 80;
+        int         num_keypoints = 17;  // for pose (COCO default)
         int         num_threads  = 4;   // CPU threads for onnxruntime
     };
 
@@ -31,7 +33,7 @@ public:
     /// Load model and initialize backend
     virtual bool load(const Config& config);
 
-    /// Run inference on a single image
+    /// Run inference on a single image (detection)
     virtual BoxArray infer(const cv::Mat& image) = 0;
 
     /// Get config
@@ -58,5 +60,13 @@ protected:
 // Factory: create a model by type
 // ============================================================
 std::shared_ptr<Model> create_model(ModelType type);
+std::shared_ptr<Model> create_model(ModelType type, TaskType task);
+
+// ============================================================
+// Task-specific model forward declarations
+// ============================================================
+class ModelV8Segment;
+class ModelV8Pose;
+class ModelV8OBB;
 
 } // namespace yolo_onnx

@@ -4,6 +4,9 @@
 #include "yolo_onnx/models/model_yolox.hpp"
 #include "yolo_onnx/models/model_v8.hpp"
 #include "yolo_onnx/models/model_ppyoloe.hpp"
+#include "yolo_onnx/models/model_v8_segment.hpp"
+#include "yolo_onnx/models/model_v8_pose.hpp"
+#include "yolo_onnx/models/model_v8_obb.hpp"
 #include <opencv2/imgproc.hpp>
 #include <iostream>
 
@@ -89,18 +92,39 @@ PreProcessResult Model::preprocess(const cv::Mat& image, int target_w, int targe
 }
 
 // ============================================================
-// Model Factory
+// Model Factory (detection — backwards compatible)
 // ============================================================
 std::shared_ptr<Model> create_model(ModelType type) {
-    switch (type) {
-        case ModelType::YOLOv5:   return std::make_shared<ModelV5>();
-        case ModelType::YOLOX:    return std::make_shared<ModelYOLOX>();
-        case ModelType::YOLOv8:   return std::make_shared<ModelV8>();
-        case ModelType::YOLOv11:  return std::make_shared<ModelV8>();
-        case ModelType::YOLO26:   return std::make_shared<ModelV8>();
-        case ModelType::PPYOLOE:  return std::make_shared<ModelPPYOLOE>();
+    return create_model(type, TaskType::Detect);
+}
+
+// ============================================================
+// Model Factory (task-aware)
+// ============================================================
+std::shared_ptr<Model> create_model(ModelType type, TaskType task) {
+    // For non-YOLOv8 model types, only detection is supported
+    if (type != ModelType::YOLOv8 && type != ModelType::YOLOv11 && type != ModelType::YOLO26) {
+        if (task != TaskType::Detect) {
+            std::cerr << "[create_model] Task '" << task_type_name(task)
+                      << "' only supported for YOLOv8 family" << std::endl;
+            return nullptr;
+        }
+        switch (type) {
+            case ModelType::YOLOv5:   return std::make_shared<ModelV5>();
+            case ModelType::YOLOX:    return std::make_shared<ModelYOLOX>();
+            case ModelType::PPYOLOE:  return std::make_shared<ModelPPYOLOE>();
+            default: break;
+        }
+    }
+
+    // YOLOv8 family with task dispatch
+    switch (task) {
+        case TaskType::Detect:  return std::make_shared<ModelV8>();
+        case TaskType::Segment: return std::make_shared<ModelV8Segment>();
+        case TaskType::Pose:    return std::make_shared<ModelV8Pose>();
+        case TaskType::OBB:     return std::make_shared<ModelV8OBB>();
         default:
-            std::cerr << "[create_model] Unknown model type" << std::endl;
+            std::cerr << "[create_model] Unknown task type" << std::endl;
             return nullptr;
     }
 }
