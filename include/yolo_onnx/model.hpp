@@ -26,6 +26,7 @@ public:
         int         num_classes  = 80;
         int         num_keypoints = 17;  // for pose (COCO default)
         int         num_threads  = 4;   // CPU threads for onnxruntime
+        std::string custom_config;      // Backend-specific config (key=value;key=value...)
     };
 
     virtual ~Model() = default;

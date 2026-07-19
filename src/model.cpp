@@ -27,6 +27,30 @@ bool Model::load(const Config& config) {
     backend_config.model_path   = config.model_path;
     backend_config.num_threads  = config.num_threads;
     backend_config.device_id    = 0;
+    backend_config.enable_fp16  = false;
+    backend_config.enable_int8  = false;
+    backend_config.custom_config = config.custom_config;
+
+    // Parse custom_config for device_id and fp16
+    if (!config.custom_config.empty()) {
+        auto parse_kv = [&](const std::string& kv) {
+            if (kv.find("--device=") == 0) {
+                backend_config.device_id = std::stoi(kv.substr(9));
+            } else if (kv.find("--fp16") == 0) {
+                backend_config.enable_fp16 = true;
+            } else if (kv.find("--int8") == 0) {
+                backend_config.enable_int8 = true;
+            }
+        };
+        size_t start = 0, end;
+        while ((end = config.custom_config.find(';', start)) != std::string::npos) {
+            parse_kv(config.custom_config.substr(start, end - start));
+            start = end + 1;
+        }
+        if (start < config.custom_config.size()) {
+            parse_kv(config.custom_config.substr(start));
+        }
+    }
 
     if (!backend_->load(backend_config)) {
         std::cerr << "[Model] Failed to load model: " << config.model_path << std::endl;

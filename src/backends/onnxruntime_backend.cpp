@@ -1,4 +1,13 @@
 #include "yolo_onnx/backends/onnxruntime_backend.hpp"
+#ifdef WITH_TENSORRT_BACKEND
+    #include "yolo_onnx/backends/tensorrt_backend.hpp"
+#endif
+#ifdef WITH_CANN_BACKEND
+    #include "yolo_onnx/backends/cann_backend.hpp"
+#endif
+#ifdef WITH_RKNN_BACKEND
+    #include "yolo_onnx/backends/rknn_backend.hpp"
+#endif
 #include <iostream>
 #include <cstring>
 
@@ -170,8 +179,33 @@ std::shared_ptr<Backend> create_backend(const std::string& backend_name) {
     if (backend_name == "onnxruntime") {
         return std::make_shared<OnnxruntimeBackend>();
     }
-    // Future: "tensorrt", "rknpu", "cann", etc.
+#ifdef WITH_TENSORRT_BACKEND
+    if (backend_name == "tensorrt") {
+        return std::make_shared<TensorRTBackend>();
+    }
+#endif
+#ifdef WITH_CANN_BACKEND
+    if (backend_name == "cann") {
+        return std::make_shared<CANNBackend>();
+    }
+#endif
+#ifdef WITH_RKNN_BACKEND
+    if (backend_name == "rknn") {
+        return std::make_shared<RKNNBackend>();
+    }
+#endif
     std::cerr << "[create_backend] Unknown backend: " << backend_name << std::endl;
+    std::cerr << "[create_backend] Supported backends: onnxruntime";
+#ifdef WITH_TENSORRT_BACKEND
+    std::cerr << ", tensorrt";
+#endif
+#ifdef WITH_CANN_BACKEND
+    std::cerr << ", cann";
+#endif
+#ifdef WITH_RKNN_BACKEND
+    std::cerr << ", rknn";
+#endif
+    std::cerr << std::endl;
     return nullptr;
 }
 

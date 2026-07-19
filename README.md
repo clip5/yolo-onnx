@@ -18,23 +18,23 @@
 ### 推理后端架构
 
 ```
-┌─────────────────────────────────────────────────┐
-│                   yolo_onnx                      │
-│  ┌──────────┐  ┌──────────┐  ┌────────────────┐ │
-│  │  ModelV5  │  │  ModelV8  │  │  ModelPPYOLOE  │ │
-│  │  ModelYOLOX│  │ (v11/v26) │  │                │ │
-│  └─────┬─────┘  └────┬─────┘  └───────┬────────┘ │
-│        │              │                │          │
-│  ┌─────┴──────────────┴────────────────┴──────┐  │
-│  │              Backend Interface              │  │
-│  │          load() / forward() / info()        │  │
-│  └─────┬──────────────┬────────────────┬───────┘  │
-│        │              │                │          │
-│  ┌─────┴─────┐  ┌─────┴─────┐  ┌──────┴───────┐  │
-│  │ onnxruntime│  │  tensorrt  │  │  cann/npu   │  │
-│  │   (CPU)   │  │  (future)  │  │  (future)   │  │
-│  └───────────┘  └───────────┘  └──────────────┘  │
-└─────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────┐
+│                     yolo_onnx                            │
+│ ┌──────────┐  ┌──────────┐  ┌──────────────────┐        │
+│ │ ModelV5  │  │ ModelV8  │  │ ModelPPYOLOE     │        │
+│ │ ModelYOLOX│  │ (v11/v26)│  │                  │        │
+│ └─────┬────┘  └────┬─────┘  └────────┬─────────┘        │
+│       │             │                 │                  │
+│ ┌─────┴─────────────┴─────────────────┴──────────────┐  │
+│ │              Backend Interface                      │  │
+│ │          load() / forward() / info()                │  │
+│ └─────┬──────────────┬────────────────┬───────────────┘  │
+│       │              │                │                  │
+│ ┌─────┴─────┐  ┌─────┴─────┐  ┌──────┴───────┐          │
+│ │ onnxruntime│  │  tensorrt  │  │  cann  │ rknn│          │
+│ │   (CPU)   │  │ (GPU/FP16) │  │(Ascend│(Rockchip)      │
+│ └───────────┘  └───────────┘  └────────────────┘          │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ## 快速开始
@@ -57,18 +57,47 @@ wget https://github.com/microsoft/onnxruntime/releases/download/v1.18.0/onnxrunt
 tar -xzf onnxruntime-linux-x64-1.18.0.tgz
 export ONNXRUNTIME_DIR=/path/to/onnxruntime-linux-x64-1.18.0
 
-# 构建
+# 基本构建（仅 ONNX Runtime CPU 后端）
 cd yolo-onnx
 mkdir build && cd build
 cmake .. -DWITH_EXAMPLES=ON -DWITH_TESTS=ON
 make -j$(nproc)
+
+# 构建时启用特定后端（需要预先安装对应 SDK）
+# TensorRT 后端（NVIDIA GPU）
+cmake .. -DWITH_EXAMPLES=ON -DWITH_TENSORRT=ON \
+    -DTENSORRT_DIR=/path/to/TensorRT
+
+# CANN 后端（Huawei Ascend NPU）
+cmake .. -DWITH_EXAMPLES=ON -DWITH_CANN=ON \
+    -DASCEND_DIR=/path/to/Ascend
+
+# RKNN 后端（Rockchip NPU）
+cmake .. -DWITH_EXAMPLES=ON -DWITH_RKNN=ON \
+    -DRKNN_DIR=/path/to/rknn
+
+# 启用多个后端
+cmake .. -DWITH_EXAMPLES=ON \
+    -DWITH_TENSORRT=ON -DWITH_CANN=ON -DWITH_RKNN=ON
 ```
 
 ### 使用示例
 
 ```bash
-# 单图推理
+# 单图推理（ONNX Runtime CPU 后端）
 ./examples/detect_image v8 /path/to/yolov8n.onnx input.jpg output.jpg
+
+# 使用 TensorRT 后端（NVIDIA GPU）
+./examples/detect_image v8 model.onnx input.jpg output.jpg \
+    --backend=tensorrt --device=0 --fp16
+
+# 使用 CANN 后端（Ascend NPU，需要 .om 模型）
+./examples/detect_image v8 model.om input.jpg output.jpg \
+    --backend=cann --device=0
+
+# 使用 RKNN 后端（Rockchip NPU，需要 .rknn 模型）
+./examples/detect_image v8 model.rknn input.jpg output.jpg \
+    --backend=rknn
 
 # 自定义参数
 ./examples/detect_image v5 model.onnx input.jpg output.jpg \
@@ -110,12 +139,46 @@ for (const auto& box : boxes) {
 ```cpp
 #include "yolo_onnx/backend.hpp"
 
-class TensorRTBackend : public yolo_onnx::Backend {
+class MyBackend : public yolo_onnx::Backend {
     // 实现所有虚函数...
 };
 
 // 在 create_backend() 中注册
-// src/backends/onnxruntime_backend.cpp
+// 参见 src/backends/onnxruntime_backend.cpp
+```
+
+### 已支持的后端
+
+| 后端 | 名称 | 目标平台 | 模型格式 | 精度支持 |
+|------|------|---------|---------|---------|
+| **ONNX Runtime** | `onnxruntime` | CPU | `.onnx` | FP32 |
+| **TensorRT** | `tensorrt` | NVIDIA GPU | `.onnx` / `.engine` | FP32 / FP16 / INT8 |
+| **CANN** | `cann` | Huawei Ascend NPU | `.om` | FP16 / INT8 |
+| **RKNN** | `rknn` | Rockchip NPU | `.rknn` | FP16 / INT8 |
+
+### 构建依赖
+
+| 后端 | 依赖 | 环境变量 | CMake 选项 |
+|------|------|---------|-----------|
+| ONNX Runtime | onnxruntime | `ONNXRUNTIME_DIR` | 默认启用 |
+| TensorRT | TensorRT + CUDA | `TENSORRT_DIR` | `-DWITH_TENSORRT=ON` |
+| CANN | AscendCL | `ASCEND_DIR` | `-DWITH_CANN=ON` |
+| RKNN | rknn_api | `RKNN_DIR` | `-DWITH_RKNN=ON` |
+
+### 模型转换指南
+
+```bash
+# ONNX → TensorRT (自动在加载时构建，会自动缓存为 .engine)
+./examples/detect_image v8 model.onnx input.jpg output.jpg --backend=tensorrt
+
+# ONNX → CANN .om (使用 atc 工具)
+atc --model=model.onnx --framework=5 --output=model \
+    --soc_version=Ascend310P3 --input_format=NCHW
+
+# ONNX → RKNN (使用 rknn-toolkit, Python)
+# python -m rknn.api RKNN
+# rknn.load_onnx(model.onnx)
+# rknn.export_rknn(model.rknn)
 ```
 
 ## 扩展新模型
@@ -154,27 +217,50 @@ yolo-onnx/
 │   ├── backend.hpp         # 推理后端接口
 │   ├── model.hpp           # 模型接口 + 工厂
 │   ├── backends/
-│   │   └── onnxruntime_backend.hpp
+│   │   ├── onnxruntime_backend.hpp
+│   │   ├── tensorrt_backend.hpp   # TensorRT (GPU)
+│   │   ├── cann_backend.hpp       # CANN (Ascend NPU)
+│   │   └── rknn_backend.hpp       # RKNN (Rockchip NPU)
 │   └── models/
 │       ├── model_v5.hpp
 │       ├── model_yolox.hpp
 │       ├── model_v8.hpp
+│       ├── model_v8_obb.hpp
+│       ├── model_v8_pose.hpp
+│       ├── model_v8_segment.hpp
 │       └── model_ppyoloe.hpp
+├── cmake/
+│   ├── FindONNXRuntime.cmake
+│   ├── FindTensorRT.cmake
+│   ├── FindCANN.cmake
+│   └── FindRKNN.cmake
 ├── src/
-│   ├── cmake/FindONNXRuntime.cmake
-│   ├── backends/onnxruntime_backend.cpp
+│   ├── backends/
+│   │   ├── onnxruntime_backend.cpp
+│   │   ├── tensorrt_backend.cpp
+│   │   ├── cann_backend.cpp
+│   │   └── rknn_backend.cpp
 │   ├── model.cpp
 │   └── models/
 │       ├── model_v5.cpp
 │       ├── model_yolox.cpp
 │       ├── model_v8.cpp
+│       ├── model_v8_obb.cpp
+│       ├── model_v8_pose.cpp
+│       ├── model_v8_segment.cpp
 │       └── model_ppyoloe.cpp
 ├── examples/
-│   └── detect_image.cpp
+│   ├── CMakeLists.txt
+│   ├── detect_image.cpp
+│   ├── obb_image.cpp
+│   ├── pose_image.cpp
+│   └── segment_image.cpp
 ├── tests/
+│   ├── CMakeLists.txt
 │   └── test_yolo.cpp
 └── python/
-    └── CMakeLists.txt
+    ├── CMakeLists.txt
+    └── python_bindings.cpp
 ```
 
 ## License
