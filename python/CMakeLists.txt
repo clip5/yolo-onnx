@@ -18,30 +18,6 @@ set(PYTHON_BINDING_SOURCES
     python_bindings.cpp
 )
 
-# Optional TensorRT backend
-if(WITH_TENSORRT AND TensorRT_FOUND)
-    list(APPEND PYTHON_BINDING_SOURCES ../src/backends/tensorrt_backend.cpp)
-    list(APPEND PYTHON_BINDING_INCLUDE_DIRS ${TensorRT_INCLUDE_DIRS})
-    list(APPEND PYTHON_BINDING_LINK_LIBS ${TensorRT_LIBRARIES})
-    add_definitions(-DWITH_TENSORRT_BACKEND)
-endif()
-
-# Optional CANN backend
-if(WITH_CANN AND CANN_FOUND)
-    list(APPEND PYTHON_BINDING_SOURCES ../src/backends/cann_backend.cpp)
-    list(APPEND PYTHON_BINDING_INCLUDE_DIRS ${CANN_INCLUDE_DIRS})
-    list(APPEND PYTHON_BINDING_LINK_LIBS ${CANN_LIBRARIES})
-    add_definitions(-DWITH_CANN_BACKEND)
-endif()
-
-# Optional RKNN backend
-if(WITH_RKNN AND RKNN_FOUND)
-    list(APPEND PYTHON_BINDING_SOURCES ../src/backends/rknn_backend.cpp)
-    list(APPEND PYTHON_BINDING_INCLUDE_DIRS ${RKNN_INCLUDE_DIRS})
-    list(APPEND PYTHON_BINDING_LINK_LIBS ${RKNN_LIBRARIES})
-    add_definitions(-DWITH_RKNN_BACKEND)
-endif()
-
 pybind11_add_module(yolo_onnx_py ${PYTHON_BINDING_SOURCES})
 
 target_include_directories(yolo_onnx_py

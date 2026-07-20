@@ -1,15 +1,7 @@
 #include "yolo_onnx/backends/onnxruntime_backend.hpp"
-#ifdef WITH_TENSORRT_BACKEND
-    #include "yolo_onnx/backends/tensorrt_backend.hpp"
-#endif
-#ifdef WITH_CANN_BACKEND
-    #include "yolo_onnx/backends/cann_backend.hpp"
-#endif
-#ifdef WITH_RKNN_BACKEND
-    #include "yolo_onnx/backends/rknn_backend.hpp"
-#endif
 #include <iostream>
 #include <cstring>
+#include <sstream>
 
 namespace yolo_onnx {
 
@@ -22,14 +14,85 @@ OnnxruntimeBackend::OnnxruntimeBackend()
 
 OnnxruntimeBackend::~OnnxruntimeBackend() = default;
 
+bool OnnxruntimeBackend::setup_execution_providers(const std::string& custom_config, int device_id) {
+    // Parse custom_config for ep=xxx
+    // Format: key=value;key=value;...
+    // Supported keys:
+    //   ep      — execution provider name (cuda, tensorrt, cpu, ...)
+    //   device  — device ID (overrides Config::device_id for EP)
+
+    if (custom_config.empty()) {
+        // Default: CPU
+        name_ = "onnxruntime";
+        return true;
+    }
+
+    std::string ep_name;
+    int ep_device_id = device_id;
+
+    // Parse key=value pairs
+    std::istringstream stream(custom_config);
+    std::string token;
+    while (std::getline(stream, token, ';')) {
+        auto eq = token.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = token.substr(0, eq);
+        std::string val = token.substr(eq + 1);
+
+        // Trim whitespace
+        auto trim = [](std::string& s) {
+            s.erase(0, s.find_first_not_of(" \t"));
+            s.erase(s.find_last_not_of(" \t") + 1);
+        };
+        trim(key);
+        trim(val);
+
+        if (key == "ep") {
+            ep_name = val;
+            // Uppercase the EP name for ONNX Runtime
+            for (auto& c : ep_name) c = toupper(c);
+        } else if (key == "device") {
+            ep_device_id = std::stoi(val);
+        }
+    }
+
+    if (ep_name.empty() || ep_name == "CPU") {
+        // CPU is default, nothing to register
+        name_ = "onnxruntime";
+        return true;
+    }
+
+    // Register the execution provider (ONNX Runtime 1.14+ string-based API)
+    // This does NOT require compile-time linking to EP-specific libraries —
+    // the onnxruntime shared library handles it internally.
+    std::unordered_map<std::string, std::string> ep_options;
+    ep_options["device_id"] = std::to_string(ep_device_id);
+
+    try {
+        session_options_.AppendExecutionProvider(ep_name, ep_options);
+        name_ = "onnxruntime/" + ep_name;
+        std::cout << "[OnnxruntimeBackend] Using execution provider: " << ep_name
+                  << " (device=" << ep_device_id << ")" << std::endl;
+    } catch (const Ort::Exception& e) {
+        std::cerr << "[OnnxruntimeBackend] Failed to register EP '" << ep_name
+                  << "': " << e.what() << std::endl;
+        std::cerr << "[OnnxruntimeBackend] Falling back to CPU (make sure you have the "
+                  << "correct onnxruntime package, e.g. onnxruntime-gpu for CUDA)" << std::endl;
+        // Fall back to CPU — don't fail
+    }
+
+    return true;
+}
+
 bool OnnxruntimeBackend::load(const Config& config) {
     try {
         // Set threads
         session_options_.SetIntraOpNumThreads(config.num_threads);
         session_options_.SetInterOpNumThreads(config.num_threads);
 
-        // Enable session profiling if needed
-        // session_options_.EnableProfiling("onnx_profile");
+        // Register execution provider (before creating session)
+        setup_execution_providers(config.custom_config, config.device_id);
 
         // Create session
         session_ = Ort::Session(env_, config.model_path.c_str(), session_options_);
@@ -174,38 +237,13 @@ std::vector<std::vector<int64_t>> OnnxruntimeBackend::get_output_shapes() const 
     return output_shapes_;
 }
 
-// Backend factory
+// Backend factory — only ONNX Runtime backed by EP
 std::shared_ptr<Backend> create_backend(const std::string& backend_name) {
     if (backend_name == "onnxruntime") {
         return std::make_shared<OnnxruntimeBackend>();
     }
-#ifdef WITH_TENSORRT_BACKEND
-    if (backend_name == "tensorrt") {
-        return std::make_shared<TensorRTBackend>();
-    }
-#endif
-#ifdef WITH_CANN_BACKEND
-    if (backend_name == "cann") {
-        return std::make_shared<CANNBackend>();
-    }
-#endif
-#ifdef WITH_RKNN_BACKEND
-    if (backend_name == "rknn") {
-        return std::make_shared<RKNNBackend>();
-    }
-#endif
     std::cerr << "[create_backend] Unknown backend: " << backend_name << std::endl;
-    std::cerr << "[create_backend] Supported backends: onnxruntime";
-#ifdef WITH_TENSORRT_BACKEND
-    std::cerr << ", tensorrt";
-#endif
-#ifdef WITH_CANN_BACKEND
-    std::cerr << ", cann";
-#endif
-#ifdef WITH_RKNN_BACKEND
-    std::cerr << ", rknn";
-#endif
-    std::cerr << std::endl;
+    std::cerr << "[create_backend] Supported backends: onnxruntime" << std::endl;
     return nullptr;
 }
 

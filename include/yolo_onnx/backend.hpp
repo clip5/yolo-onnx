@@ -8,7 +8,9 @@ namespace yolo_onnx {
 // ============================================================
 // Inference Backend Interface
 // ============================================================
-// Supports: onnxruntime (CPU), tensorrt, rknpu (rockchip), cann (ascend), etc.
+// 当前只有 onnxruntime 一个后端，硬件加速通过 ONNX Runtime
+// Execution Provider 实现（CUDA / TensorRT / CANN 等），
+// 在 Config::custom_config 中通过 ep=xxx 指定。
 // ============================================================
 
 class Backend {

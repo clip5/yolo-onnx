@@ -16,7 +16,22 @@ find_path(ONNXRUNTIME_INCLUDE_DIR
         $ENV{ONNXRUNTIME_DIR}/include
         $ENV{HOME}/download/onnxruntime/include
         $ENV{HOME}/.cache/.lingma/env/include
+    PATH_SUFFIXES
+        onnxruntime/core/session    # conda package layout
+        core/session                # alternate layout
 )
+
+# If not found at root, check under common subdirectories
+if(NOT ONNXRUNTIME_INCLUDE_DIR)
+    find_path(ONNXRUNTIME_INCLUDE_DIR
+        NAMES onnxruntime_cxx_api.h
+        PATHS
+            /usr/include/onnxruntime/core/session
+            /usr/local/include/onnxruntime/core/session
+            /opt/onnxruntime/include/onnxruntime/core/session
+            $ENV{ONNXRUNTIME_DIR}/include/onnxruntime/core/session
+    )
+endif()
 
 find_library(ONNXRUNTIME_LIBRARY
     NAMES onnxruntime libonnxruntime
