@@ -8,7 +8,7 @@ namespace yolo_onnx {
 /// Box format: cx, cy, w, h in grid space (need stride scaling)
 class ModelV8 : public Model {
 public:
-    BoxArray infer(const cv::Mat& image) override;
+    InferResult infer(const cv::Mat& image) override;
 protected:
     BoxArray decode_output(
         const std::vector<std::vector<float>>&   output_data,

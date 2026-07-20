@@ -1,5 +1,4 @@
-#include "yolo_onnx/model.hpp"
-#include "yolo_onnx/models/model_v8_obb.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 #include <opencv2/opencv.hpp>
 #include <iostream>
 
@@ -89,22 +88,22 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // Run OBB inference
-    auto* obb_model = dynamic_cast<yolo_onnx::ModelV8OBB*>(model.get());
-    if (!obb_model) {
-        std::cerr << "Model is not an OBB model" << std::endl;
+    // Run unified inference — no dynamic_cast needed
+    yolo_onnx::InferResult result = model->infer(image);
+    auto* obb = std::get_if<yolo_onnx::OBBResult>(&result);
+    if (!obb) {
+        std::cerr << "Expected OBB result" << std::endl;
         return -1;
     }
-    auto result = obb_model->infer_obb(image);
 
-    std::cout << "Detected " << result.obb_boxes.size() << " oriented objects:" << std::endl;
-    for (size_t i = 0; i < result.obb_boxes.size(); i++) {
-        const auto& obb = result.obb_boxes[i];
-        std::cout << "  #" << i << " label=" << obb.label
-                  << " score=" << obb.score
-                  << " center=(" << (int)obb.cx << "," << (int)obb.cy << ")"
-                  << " size=" << (int)obb.w << "x" << (int)obb.h
-                  << " angle=" << obb.angle << " rad"
+    std::cout << "Detected " << obb->obb_boxes.size() << " oriented objects:" << std::endl;
+    for (size_t i = 0; i < obb->obb_boxes.size(); i++) {
+        const auto& obb_box = obb->obb_boxes[i];
+        std::cout << "  #" << i << " label=" << obb_box.label
+                  << " score=" << obb_box.score
+                  << " center=(" << (int)obb_box.cx << "," << (int)obb_box.cy << ")"
+                  << " size=" << (int)obb_box.w << "x" << (int)obb_box.h
+                  << " angle=" << obb_box.angle << " rad"
                   << std::endl;
     }
 
@@ -112,14 +111,14 @@ int main(int argc, char** argv) {
     cv::Mat result_img = image.clone();
     cv::RNG rng(0xDEADBEEF);
 
-    for (size_t i = 0; i < result.obb_boxes.size(); i++) {
-        const auto& obb = result.obb_boxes[i];
+    for (size_t i = 0; i < obb->obb_boxes.size(); i++) {
+        const auto& obb_box = obb->obb_boxes[i];
 
         // Random color
         cv::Scalar color(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255));
 
         // Get the 4 corners of the rotated box
-        auto pts = obb.corners();
+        auto pts = obb_box.corners();
         std::vector<cv::Point> poly;
         for (const auto& p : pts) {
             poly.push_back(cv::Point((int)p.x, (int)p.y));
@@ -129,7 +128,7 @@ int main(int argc, char** argv) {
         cv::polylines(result_img, poly, true, color, 2);
 
         // Draw label
-        std::string label = std::to_string(obb.label) + ": " + std::to_string(obb.score).substr(0, 4);
+        std::string label = std::to_string(obb_box.label) + ": " + std::to_string(obb_box.score).substr(0, 4);
         int baseLine;
         cv::Size label_size = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseLine);
         cv::rectangle(result_img,

@@ -7,7 +7,7 @@ namespace yolo_onnx {
 /// Output: 3 tensors [1, 3*(5+C), H, W] at strides 8, 16, 32
 class ModelV5 : public Model {
 public:
-    BoxArray infer(const cv::Mat& image) override;
+    InferResult infer(const cv::Mat& image) override;
 protected:
     BoxArray decode_output(
         const std::vector<std::vector<float>>&   output_data,

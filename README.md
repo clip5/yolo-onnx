@@ -107,7 +107,7 @@ cmake .. -DWITH_EXAMPLES=ON \
 ### 代码中使用
 
 ```cpp
-#include "yolo_onnx/model.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 #include <opencv2/opencv.hpp>
 
 // 1. 创建模型
@@ -130,6 +130,41 @@ for (const auto& box : boxes) {
     printf("label=%d score=%.3f [%.0f,%.0f,%.0f,%.0f]\n",
            box.label, box.score, box.x1, box.y1, box.x2, box.y2);
 }
+```
+
+### 多任务推理（Segment / Pose / OBB）
+
+创建模型时指定任务类型，使用统一的 `infer_task()` 接口，无需 `dynamic_cast`：
+
+```cpp
+#include "yolo_onnx/yolo_onnx.hpp"
+
+// 创建分割模型
+auto model = yolo_onnx::create_model(yolo_onnx::ModelType::YOLOv8,
+                                     yolo_onnx::TaskType::Segment);
+
+// 配置并加载
+yolo_onnx::Model::Config config;
+config.model_path = "yolov8n-seg.onnx";
+config.task_type  = yolo_onnx::TaskType::Segment;
+model->load(config);
+
+// 统一推理接口 — 返回 std::variant
+yolo_onnx::InferResult result = model->infer_task(image);
+
+// 用 std::get_if 安全提取结果
+if (auto* seg = std::get_if<yolo_onnx::SegmentResult>(&result)) {
+    for (size_t i = 0; i < seg->boxes.size(); i++) {
+        // seg->boxes[i]  — 检测框
+        // seg->masks[i]  — 分割掩码
+    }
+}
+
+// 其他任务类型：
+//   yolo_onnx::TaskType::Pose  → PoseResult (boxes + keypoints)
+//   yolo_onnx::TaskType::OBB   → OBBResult  (obb_boxes)
+//   yolo_onnx::TaskType::Detect → DetectResult (boxes)
+// 传统 detect 任务也可用 model->infer(image) 直接返回 BoxArray
 ```
 
 ## 扩展新后端
@@ -213,9 +248,10 @@ boxes = model.infer("image.jpg")
 yolo-onnx/
 ├── CMakeLists.txt
 ├── include/yolo_onnx/
-│   ├── types.hpp           # 核心类型：Box, ModelType, 工具函数
-│   ├── backend.hpp         # 推理后端接口
-│   ├── model.hpp           # 模型接口 + 工厂
+│   ├── yolo_onnx.hpp           # 统一对外接口头文件
+│   ├── yolo_onnx_types.hpp   # 核心类型：Box, ModelType, InferResult, 工具函数
+│   ├── backend.hpp           # 推理后端接口
+│   ├── model.hpp             # 模型基类 + 工厂
 │   ├── backends/
 │   │   ├── onnxruntime_backend.hpp
 │   │   ├── tensorrt_backend.hpp   # TensorRT (GPU)

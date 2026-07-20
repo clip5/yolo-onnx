@@ -1,5 +1,4 @@
-#include "yolo_onnx/model.hpp"
-#include "yolo_onnx/models/model_v8_pose.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 #include <opencv2/opencv.hpp>
 #include <iostream>
 
@@ -100,31 +99,31 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // Run pose inference
-    auto* pose_model = dynamic_cast<yolo_onnx::ModelV8Pose*>(model.get());
-    if (!pose_model) {
-        std::cerr << "Model is not a pose model" << std::endl;
+    // Run unified inference — no dynamic_cast needed
+    yolo_onnx::InferResult result = model->infer(image);
+    auto* pose = std::get_if<yolo_onnx::PoseResult>(&result);
+    if (!pose) {
+        std::cerr << "Expected pose result" << std::endl;
         return -1;
     }
-    auto result = pose_model->infer_pose(image);
 
-    std::cout << "Detected " << result.boxes.size() << " poses:" << std::endl;
-    for (size_t i = 0; i < result.boxes.size(); i++) {
-        const auto& box = result.boxes[i];
+    std::cout << "Detected " << pose->boxes.size() << " poses:" << std::endl;
+    for (size_t i = 0; i < pose->boxes.size(); i++) {
+        const auto& box = pose->boxes[i];
         std::cout << "  #" << i << " label=" << box.label
                   << " score=" << box.score
                   << " rect=[" << (int)box.x1 << "," << (int)box.y1
                   << "," << (int)box.x2 << "," << (int)box.y2 << "]"
-                  << " keypoints=" << result.keypoints[i].size()
+                  << " keypoints=" << pose->keypoints[i].size()
                   << std::endl;
     }
 
     // Draw results
     cv::Mat result_img = image.clone();
 
-    for (size_t i = 0; i < result.boxes.size(); i++) {
-        const auto& box = result.boxes[i];
-        const auto& kpts = result.keypoints[i];
+    for (size_t i = 0; i < pose->boxes.size(); i++) {
+        const auto& box = pose->boxes[i];
+        const auto& kpts = pose->keypoints[i];
 
         // Draw box
         cv::rectangle(result_img,

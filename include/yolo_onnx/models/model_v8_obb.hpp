@@ -8,7 +8,7 @@ namespace yolo_onnx {
 /// Box format: cx, cy, w, h (grid space), angle (radians)
 class ModelV8OBB : public Model {
 public:
-    BoxArray infer(const cv::Mat& image) override;
+    InferResult infer(const cv::Mat& image) override;
 
     /// Full OBB inference: returns oriented bounding boxes
     OBBResult infer_obb(const cv::Mat& image);

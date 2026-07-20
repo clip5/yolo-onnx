@@ -8,7 +8,7 @@ namespace yolo_onnx {
 /// Each keypoint: (x, y, visibility)  — visibility: 0=unlabeled, 1=not visible, 2=visible
 class ModelV8Pose : public Model {
 public:
-    BoxArray infer(const cv::Mat& image) override;
+    InferResult infer(const cv::Mat& image) override;
 
     /// Full pose inference: returns boxes + keypoints
     PoseResult infer_pose(const cv::Mat& image);

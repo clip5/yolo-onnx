@@ -1,5 +1,4 @@
-#include "yolo_onnx/model.hpp"
-#include "yolo_onnx/models/model_v8_segment.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 #include <opencv2/opencv.hpp>
 #include <iostream>
 
@@ -89,22 +88,22 @@ int main(int argc, char** argv) {
         return -1;
     }
 
-    // Run segment inference (we know it's a ModelV8Segment)
-    auto* seg_model = dynamic_cast<yolo_onnx::ModelV8Segment*>(model.get());
-    if (!seg_model) {
-        std::cerr << "Model is not a segment model" << std::endl;
+    // Run unified inference — no dynamic_cast needed
+    yolo_onnx::InferResult result = model->infer(image);
+    auto* seg = std::get_if<yolo_onnx::SegmentResult>(&result);
+    if (!seg) {
+        std::cerr << "Expected segment result" << std::endl;
         return -1;
     }
-    auto result = seg_model->infer_segment(image);
 
-    std::cout << "Detected " << result.boxes.size() << " objects with masks:" << std::endl;
-    for (size_t i = 0; i < result.boxes.size(); i++) {
-        const auto& box = result.boxes[i];
+    std::cout << "Detected " << seg->boxes.size() << " objects with masks:" << std::endl;
+    for (size_t i = 0; i < seg->boxes.size(); i++) {
+        const auto& box = seg->boxes[i];
         std::cout << "  #" << i << " label=" << box.label
                   << " score=" << box.score
                   << " rect=[" << (int)box.x1 << "," << (int)box.y1
                   << "," << (int)box.x2 << "," << (int)box.y2 << "]"
-                  << " mask=" << result.masks[i].width << "x" << result.masks[i].height
+                  << " mask=" << seg->masks[i].width << "x" << seg->masks[i].height
                   << std::endl;
     }
 
@@ -112,9 +111,9 @@ int main(int argc, char** argv) {
     cv::Mat result_img = image.clone();
     cv::RNG rng(0xDEADBEEF);
 
-    for (size_t i = 0; i < result.boxes.size(); i++) {
-        const auto& box = result.boxes[i];
-        const auto& mask = result.masks[i];
+    for (size_t i = 0; i < seg->boxes.size(); i++) {
+        const auto& box = seg->boxes[i];
+        const auto& mask = seg->masks[i];
 
         // Random color
         cv::Scalar color(rng.uniform(0, 255), rng.uniform(0, 255), rng.uniform(0, 255));

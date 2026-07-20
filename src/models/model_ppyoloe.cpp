@@ -1,9 +1,10 @@
 #include "yolo_onnx/models/model_ppyoloe.hpp"
+#include "yolo_onnx/backend.hpp"
 #include <iostream>
 
 namespace yolo_onnx {
 
-BoxArray ModelPPYOLOE::infer(const cv::Mat& image) {
+InferResult ModelPPYOLOE::infer(const cv::Mat& image) {
     // 1. Preprocess
     auto pre = preprocess(image, config_.input_width, config_.input_height);
 
@@ -24,7 +25,7 @@ BoxArray ModelPPYOLOE::infer(const cv::Mat& image) {
 
     if (!ok) {
         std::cerr << "[ModelPPYOLOE] Inference failed" << std::endl;
-        return {};
+        return DetectResult{};
     }
 
     // 4. Decode output
@@ -42,7 +43,7 @@ BoxArray ModelPPYOLOE::infer(const cv::Mat& image) {
         result.push_back(boxes[idx]);
     }
 
-    return result;
+    return DetectResult{result};
 }
 
 BoxArray ModelPPYOLOE::decode_output(

@@ -9,7 +9,7 @@ namespace yolo_onnx {
 ///   reg[i]: [1, 4, H, W]
 class ModelPPYOLOE : public Model {
 public:
-    BoxArray infer(const cv::Mat& image) override;
+    InferResult infer(const cv::Mat& image) override;
 protected:
     BoxArray decode_output(
         const std::vector<std::vector<float>>&   output_data,

@@ -1,4 +1,5 @@
 #include "yolo_onnx/models/model_v8_obb.hpp"
+#include "yolo_onnx/backend.hpp"
 #include <opencv2/imgproc.hpp>
 #include <iostream>
 
@@ -46,14 +47,8 @@ static std::vector<int> obb_nms(const OBBBoxArray& boxes, float iou_threshold) {
     return indices;
 }
 
-BoxArray ModelV8OBB::infer(const cv::Mat& image) {
-    // For backwards compatibility, return axis-aligned boxes
-    auto result = infer_obb(image);
-    BoxArray boxes;
-    for (const auto& obb : result.obb_boxes) {
-        boxes.push_back(obb.aabb());
-    }
-    return boxes;
+InferResult ModelV8OBB::infer(const cv::Mat& image) {
+    return infer_obb(image);
 }
 
 OBBResult ModelV8OBB::infer_obb(const cv::Mat& image) {

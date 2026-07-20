@@ -1,4 +1,4 @@
-#include "yolo_onnx/model.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <cstring>
@@ -115,7 +115,13 @@ int main(int argc, char** argv) {
     }
 
     // Run inference
-    auto boxes = model->infer(image);
+    yolo_onnx::InferResult result = model->infer(image);
+    auto* det = std::get_if<yolo_onnx::DetectResult>(&result);
+    if (!det) {
+        std::cerr << "Unexpected result type" << std::endl;
+        return -1;
+    }
+    const auto& boxes = det->boxes;
 
     std::cout << "Detected " << boxes.size() << " objects:" << std::endl;
     for (const auto& box : boxes) {
@@ -127,9 +133,9 @@ int main(int argc, char** argv) {
     }
 
     // Draw results
-    cv::Mat result = image.clone();
+    cv::Mat result_img = image.clone();
     for (const auto& box : boxes) {
-        cv::rectangle(result,
+        cv::rectangle(result_img,
             cv::Point((int)box.x1, (int)box.y1),
             cv::Point((int)box.x2, (int)box.y2),
             cv::Scalar(0, 255, 0), 2);
@@ -137,16 +143,16 @@ int main(int argc, char** argv) {
         std::string label = std::to_string(box.label) + ": " + std::to_string(box.score).substr(0, 4);
         int baseLine;
         cv::Size label_size = cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseLine);
-        cv::rectangle(result,
+        cv::rectangle(result_img,
             cv::Point((int)box.x1, (int)box.y1 - label_size.height - 5),
             cv::Point((int)box.x1 + label_size.width, (int)box.y1),
             cv::Scalar(0, 255, 0), cv::FILLED);
-        cv::putText(result, label,
+        cv::putText(result_img, label,
             cv::Point((int)box.x1, (int)box.y1 - 5),
             cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(0, 0, 0), 1);
     }
 
-    cv::imwrite(out_path, result);
+    cv::imwrite(out_path, result_img);
     std::cout << "Result saved to: " << out_path << std::endl;
 
     return 0;

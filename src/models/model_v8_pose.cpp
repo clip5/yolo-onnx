@@ -1,12 +1,11 @@
 #include "yolo_onnx/models/model_v8_pose.hpp"
+#include "yolo_onnx/backend.hpp"
 #include <iostream>
 
 namespace yolo_onnx {
 
-BoxArray ModelV8Pose::infer(const cv::Mat& image) {
-    // For backwards compatibility, return just boxes (no keypoints)
-    auto result = infer_pose(image);
-    return result.boxes;
+InferResult ModelV8Pose::infer(const cv::Mat& image) {
+    return infer_pose(image);
 }
 
 PoseResult ModelV8Pose::infer_pose(const cv::Mat& image) {

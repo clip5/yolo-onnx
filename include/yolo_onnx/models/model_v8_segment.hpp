@@ -9,7 +9,7 @@ namespace yolo_onnx {
 ///   2. Proto masks:             [1, 32, H, W]  (H,W = input/4)
 class ModelV8Segment : public Model {
 public:
-    BoxArray infer(const cv::Mat& image) override;
+    InferResult infer(const cv::Mat& image) override;
 
     /// Full segment inference: returns boxes + masks
     SegmentResult infer_segment(const cv::Mat& image);

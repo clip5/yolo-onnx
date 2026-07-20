@@ -1,13 +1,12 @@
 #include "yolo_onnx/models/model_v8_segment.hpp"
+#include "yolo_onnx/backend.hpp"
 #include <iostream>
 #include <opencv2/imgproc.hpp>
 
 namespace yolo_onnx {
 
-BoxArray ModelV8Segment::infer(const cv::Mat& image) {
-    // For backwards compatibility, return just boxes (no masks)
-    auto result = infer_segment(image);
-    return result.boxes;
+InferResult ModelV8Segment::infer(const cv::Mat& image) {
+    return infer_segment(image);
 }
 
 SegmentResult ModelV8Segment::infer_segment(const cv::Mat& image) {
