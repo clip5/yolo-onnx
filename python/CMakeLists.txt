@@ -6,15 +6,17 @@ find_package(pybind11 REQUIRED)
 
 # Source files for the Python module
 set(PYTHON_BINDING_SOURCES
-    ../src/backends/onnxruntime_backend.cpp
+    ../src/core/onnxruntime_backend.cpp
+    ../src/process/preprocess/preprocess.cpp
+    ../src/process/postprocess/postprocess.cpp
     ../src/model.cpp
-    ../src/models/model_v5.cpp
-    ../src/models/model_yolox.cpp
-    ../src/models/model_v8.cpp
-    ../src/models/model_ppyoloe.cpp
-    ../src/models/model_v8_segment.cpp
-    ../src/models/model_v8_pose.cpp
-    ../src/models/model_v8_obb.cpp
+    ../src/models/detect/v5.cpp
+    ../src/models/detect/yolox.cpp
+    ../src/models/detect/v8.cpp
+    ../src/models/detect/ppyoloe.cpp
+    ../src/models/segment/v8.cpp
+    ../src/models/pose/v8.cpp
+    ../src/models/obb/v8.cpp
     python_bindings.cpp
 )
 

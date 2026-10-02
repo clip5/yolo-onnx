@@ -3,9 +3,9 @@
 #include <pybind11/numpy.h>
 
 #include "yolo_onnx/yolo_onnx.hpp"
-#include "yolo_onnx/models/model_v8_segment.hpp"
-#include "yolo_onnx/models/model_v8_pose.hpp"
-#include "yolo_onnx/models/model_v8_obb.hpp"
+#include "models/segment/v8.hpp"
+#include "models/pose/v8.hpp"
+#include "models/obb/v8.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>

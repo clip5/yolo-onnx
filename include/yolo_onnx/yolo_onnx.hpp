@@ -30,10 +30,12 @@ namespace yolo_onnx {
 // ============================================================
 // Inference Backend Interface (前置声明)
 // ============================================================
-// Backend 是内部实现细节，对外接口只需前置声明。
-// 完整定义在 backend.hpp 中，用户无需包含。
+// Backend / PreProcess 是内部实现细节，对外接口只需前置声明。
+// 完整定义在 src/core/backend.hpp、src/process/preprocess/preprocess.hpp 中，
+// 用户无需包含。
 // ============================================================
 class Backend;
+class PreProcess;
 
 // ============================================================
 // YOLO Model Interface
@@ -83,14 +85,16 @@ public:
 protected:
     Config                config_;
     std::shared_ptr<Backend> backend_;
+    mutable std::shared_ptr<PreProcess> preprocess_;
 
-    /// Letterbox resize + normalize
+    /// 构造本模型的预处理参数（默认按 model_type 生成；YOLOX 等覆盖以定制 mean/std）
+    virtual PreProcessParams make_preprocess_params() const {
+        return PreProcessParams::for_model(config_.model_type,
+                                           config_.input_width, config_.input_height);
+    }
+
+    /// Letterbox resize + normalize（复用独立的 PreProcess 模块）
     PreProcessResult preprocess(const cv::Mat& image, int target_w, int target_h) const;
-
-    /// Per-channel normalization applied after the default /255 scaling.
-    /// `ch`: 0=R, 1=G, 2=B. Default: identity (values stay in [0,1]).
-    /// Override for models that expect e.g. ImageNet mean/std (YOLOX).
-    virtual float normalize_channel(float v, int ch) const { return v; }
 
     /// Decode model output into candidate boxes (model-specific)
     virtual BoxArray decode_output(
@@ -104,12 +108,5 @@ protected:
 // ============================================================
 std::shared_ptr<Model> create_model(ModelType type);
 std::shared_ptr<Model> create_model(ModelType type, TaskType task);
-
-// ============================================================
-// Task-specific model forward declarations
-// ============================================================
-class ModelV8Segment;
-class ModelV8Pose;
-class ModelV8OBB;
 
 } // namespace yolo_onnx

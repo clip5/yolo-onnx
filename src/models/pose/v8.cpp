@@ -1,58 +1,15 @@
-#include "yolo_onnx/models/model_v8_obb.hpp"
-#include "yolo_onnx/backend.hpp"
-#include <opencv2/imgproc.hpp>
+#include "models/pose/v8.hpp"
+#include "core/backend.hpp"
 #include <iostream>
 
 namespace yolo_onnx {
 
-// ============================================================
-// OBB utility functions (local to this translation unit)
-// ============================================================
-static float obb_iou(const OBBBox& a, const OBBBox& b) {
-    cv::RotatedRect rr_a(cv::Point2f(a.cx, a.cy), cv::Size2f(a.w, a.h), a.angle * 180.0f / CV_PI);
-    cv::RotatedRect rr_b(cv::Point2f(b.cx, b.cy), cv::Size2f(b.w, b.h), b.angle * 180.0f / CV_PI);
-
-    std::vector<cv::Point2f> inter;
-    float intersection_area = 0.0f;
-    int ret = cv::rotatedRectangleIntersection(rr_a, rr_b, inter);
-    if (ret != 0 && !inter.empty()) {
-        intersection_area = cv::contourArea(inter);
-    }
-
-    float area_a = a.w * a.h;
-    float area_b = b.w * b.h;
-    float union_area = area_a + area_b - intersection_area;
-    if (union_area <= 0.0f) return 0.0f;
-    return intersection_area / union_area;
+InferResult ModelV8Pose::infer(const cv::Mat& image) {
+    return infer_pose(image);
 }
 
-static std::vector<int> obb_nms(const OBBBoxArray& boxes, float iou_threshold) {
-    std::vector<int> indices;
-    std::vector<int> order(boxes.size());
-    for (int i = 0; i < (int)boxes.size(); i++) order[i] = i;
-    std::sort(order.begin(), order.end(), [&](int i, int j) {
-        return boxes[i].score > boxes[j].score;
-    });
-    std::vector<bool> removed(boxes.size(), false);
-    for (int i = 0; i < (int)order.size(); i++) {
-        if (removed[order[i]]) continue;
-        indices.push_back(order[i]);
-        for (int j = i + 1; j < (int)order.size(); j++) {
-            if (removed[order[j]]) continue;
-            if (obb_iou(boxes[order[i]], boxes[order[j]]) > iou_threshold) {
-                removed[order[j]] = true;
-            }
-        }
-    }
-    return indices;
-}
-
-InferResult ModelV8OBB::infer(const cv::Mat& image) {
-    return infer_obb(image);
-}
-
-OBBResult ModelV8OBB::infer_obb(const cv::Mat& image) {
-    OBBResult result;
+PoseResult ModelV8Pose::infer_pose(const cv::Mat& image) {
+    PoseResult result;
 
     // 1. Preprocess
     auto pre = preprocess(image, config_.input_width, config_.input_height);
@@ -73,95 +30,86 @@ OBBResult ModelV8OBB::infer_obb(const cv::Mat& image) {
     );
 
     if (!ok) {
-        std::cerr << "[ModelV8OBB] Inference failed" << std::endl;
+        std::cerr << "[ModelV8Pose] Inference failed" << std::endl;
         return result;
     }
 
-    // 4. Decode OBB candidates
-    auto obb_boxes = decode_obb_candidates(output_data, output_shapes);
+    // 4. Decode candidates (boxes + keypoints)
+    auto candidates = decode_pose_candidates(output_data, output_shapes);
 
-    // 5. Scale OBB boxes back to original image
-    for (auto& obb : obb_boxes) {
-        scale_obb_box(obb, pre.letterbox);
+    // 5. Scale boxes and keypoints back to original image
+    for (auto& cand : candidates) {
+        scale_box(cand.box, pre.letterbox);
+        for (auto& kp : cand.keypoints) {
+            scale_keypoint(kp, pre.letterbox);
+        }
     }
 
-    // 6. OBB NMS (uses rotated IoU)
-    auto keep = obb_nms(obb_boxes, config_.nms_thresh);
+    // 6. NMS on boxes
+    BoxArray boxes;
+    for (const auto& cand : candidates) {
+        boxes.push_back(cand.box);
+    }
+    auto keep = nms(boxes, config_.nms_thresh);
+
+    // 7. Collect results
     for (int idx : keep) {
-        result.obb_boxes.push_back(obb_boxes[idx]);
+        result.boxes.push_back(candidates[idx].box);
+        result.keypoints.push_back(candidates[idx].keypoints);
     }
 
     return result;
 }
 
-BoxArray ModelV8OBB::decode_output(
+BoxArray ModelV8Pose::decode_output(
     const std::vector<std::vector<float>>&   output_data,
     const std::vector<std::vector<int64_t>>& output_shapes
 ) const {
-    auto obb_boxes = decode_obb_candidates(output_data, output_shapes);
+    auto candidates = decode_pose_candidates(output_data, output_shapes);
     BoxArray boxes;
-    for (const auto& obb : obb_boxes) {
-        boxes.push_back(obb.aabb());
+    for (const auto& cand : candidates) {
+        boxes.push_back(cand.box);
     }
     return boxes;
 }
 
-OBBBoxArray ModelV8OBB::decode_obb_candidates(
+std::vector<ModelV8Pose::DecodedPoseBox> ModelV8Pose::decode_pose_candidates(
     const std::vector<std::vector<float>>&   output_data,
     const std::vector<std::vector<int64_t>>& output_shapes
 ) const {
-    OBBBoxArray candidates;
+    std::vector<DecodedPoseBox> candidates;
     if (output_data.empty()) return candidates;
 
     int num_classes = config_.num_classes;
     float score_thresh = config_.score_thresh;
+    int num_kpts = config_.num_keypoints;
 
     const auto& data = output_data[0];
     const auto& shape = output_shapes[0];
 
     if (shape.size() < 3) return candidates;
 
-    int channels, num_boxes, height, width;
+    int channels, num_boxes;
     bool is_chw_layout = false;
 
     if (shape.size() == 3) {
         channels  = (int)shape[1];
         num_boxes = (int)shape[2];
-        height = width = 0;
     } else if (shape.size() == 4) {
         channels = (int)shape[1];
-        height   = (int)shape[2];
-        width    = (int)shape[3];
         num_boxes = 0;
         is_chw_layout = true;
     } else {
         return candidates;
     }
 
-    // YOLOv8-obb: [cx, cy, w, h, cls0, cls1, ..., angle]
-    // or [cx, cy, w, h, angle, cls0, cls1, ...]
-    // The angle is 1 extra channel. Total channels = 4 + num_classes + 1
-    // Determine if angle is before or after classes
-    // Heuristic: if channels == 4 + 1 + num_classes, angle is at position 4 (after box, before cls)
-    // or at position 4 + num_classes (after box + cls)
-    int angle_pos = 4;  // default: angle at position 4 (before classes)
-    if (channels == 4 + num_classes + 1) {
-        // Try both positions
-        // Usually angle is at position 4 (before classes) in YOLOv8-obb
-        angle_pos = 4;
-    }
-    int cls_start = 4;
-    // If angle is before classes, classes start at 5
-    if (channels >= 4 + 1 + num_classes) {
-        // Check: if there's a value at position 4 that looks like an angle
-        // (not a probability), then angle is at 4 and classes start at 5
-        // We'll use angle_pos = 4, cls_start = 5
-        cls_start = 5;
-    }
+    int kpt_start = 4 + num_classes;  // where keypoint data begins
+    int kpt_dim = 3;  // x, y, visibility per keypoint
 
     if (is_chw_layout) {
-        // 4D output: [1, C, H, W]
-        // Each grid cell corresponds to one stride level
+        // 4D output: [1, C, H, W] — treat as grids per stride
+        int height = (int)shape[2];
+        int width  = (int)shape[3];
         int stride = config_.input_width / width;
 
         for (int h = 0; h < height; h++) {
@@ -169,7 +117,7 @@ OBBBoxArray ModelV8OBB::decode_obb_candidates(
                 float max_cls = 0.0f;
                 int max_cls_id = -1;
                 for (int c = 0; c < num_classes; c++) {
-                    float cls = sigmoid(data[(cls_start + c) * height * width + h * width + w]);
+                    float cls = sigmoid(data[(4 + c) * height * width + h * width + w]);
                     if (cls > max_cls) {
                         max_cls = cls;
                         max_cls_id = c;
@@ -182,14 +130,34 @@ OBBBoxArray ModelV8OBB::decode_obb_candidates(
                 float cy = data[1 * height * width + h * width + w];
                 float bw = data[2 * height * width + h * width + w];
                 float bh = data[3 * height * width + h * width + w];
-                float angle = sigmoid(data[angle_pos * height * width + h * width + w]) * CV_PI;
 
                 float bx = (sigmoid(cx) + w) * stride;
                 float by = (sigmoid(cy) + h) * stride;
                 float box_w = bw * stride;
                 float box_h = bh * stride;
 
-                candidates.emplace_back(bx, by, box_w, box_h, angle, max_cls, max_cls_id);
+                float x1 = bx - box_w / 2.0f;
+                float y1 = by - box_h / 2.0f;
+                float x2 = bx + box_w / 2.0f;
+                float y2 = by + box_h / 2.0f;
+
+                DecodedPoseBox cand;
+                cand.box = Box(x1, y1, x2, y2, max_cls, max_cls_id);
+
+                // Decode keypoints
+                for (int k = 0; k < num_kpts; k++) {
+                    Keypoint kp;
+                    kp.x = data[(kpt_start + k * kpt_dim + 0) * height * width + h * width + w];
+                    kp.y = data[(kpt_start + k * kpt_dim + 1) * height * width + h * width + w];
+                    kp.visibility = data[(kpt_start + k * kpt_dim + 2) * height * width + h * width + w];
+
+                    // Decode x, y from grid space
+                    kp.x = (sigmoid(kp.x) + w) * stride;
+                    kp.y = (sigmoid(kp.y) + h) * stride;
+
+                    cand.keypoints.push_back(kp);
+                }
+                candidates.push_back(cand);
             }
         }
     } else {
@@ -211,7 +179,7 @@ OBBBoxArray ModelV8OBB::decode_obb_candidates(
                 float max_cls = 0.0f;
                 int max_cls_id = -1;
                 for (int c = 0; c < num_classes; c++) {
-                    float cls = sigmoid(data[(cls_start + c) * num_boxes + idx]);
+                    float cls = sigmoid(data[(4 + c) * num_boxes + idx]);
                     if (cls > max_cls) {
                         max_cls = cls;
                         max_cls_id = c;
@@ -224,7 +192,6 @@ OBBBoxArray ModelV8OBB::decode_obb_candidates(
                 float cy = data[1 * num_boxes + idx];
                 float bw = data[2 * num_boxes + idx];
                 float bh = data[3 * num_boxes + idx];
-                float angle = sigmoid(data[angle_pos * num_boxes + idx]) * CV_PI;
 
                 float bx, by, box_w, box_h;
                 if (cx >= 0.0f && cx <= 1.0f && cy >= 0.0f && cy <= 1.0f) {
@@ -239,7 +206,33 @@ OBBBoxArray ModelV8OBB::decode_obb_candidates(
                     box_h = bh * stride;
                 }
 
-                candidates.emplace_back(bx, by, box_w, box_h, angle, max_cls, max_cls_id);
+                float x1 = bx - box_w / 2.0f;
+                float y1 = by - box_h / 2.0f;
+                float x2 = bx + box_w / 2.0f;
+                float y2 = by + box_h / 2.0f;
+
+                DecodedPoseBox cand;
+                cand.box = Box(x1, y1, x2, y2, max_cls, max_cls_id);
+
+                // Decode keypoints
+                for (int k = 0; k < num_kpts; k++) {
+                    Keypoint kp;
+                    kp.x = data[(kpt_start + k * kpt_dim + 0) * num_boxes + idx];
+                    kp.y = data[(kpt_start + k * kpt_dim + 1) * num_boxes + idx];
+                    kp.visibility = data[(kpt_start + k * kpt_dim + 2) * num_boxes + idx];
+
+                    // Decode x, y from grid space
+                    if (kp.x >= 0.0f && kp.x <= 1.0f && kp.y >= 0.0f && kp.y <= 1.0f) {
+                        kp.x = (sigmoid(kp.x) + gi) * stride;
+                        kp.y = (sigmoid(kp.y) + gj) * stride;
+                    } else {
+                        kp.x = kp.x * stride;
+                        kp.y = kp.y * stride;
+                    }
+
+                    cand.keypoints.push_back(kp);
+                }
+                candidates.push_back(cand);
             }
             grid_offset += grid_counts[level];
         }

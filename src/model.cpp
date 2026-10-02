@@ -1,12 +1,13 @@
 #include "yolo_onnx/yolo_onnx.hpp"
-#include "yolo_onnx/backends/onnxruntime_backend.hpp"
-#include "yolo_onnx/models/model_v5.hpp"
-#include "yolo_onnx/models/model_yolox.hpp"
-#include "yolo_onnx/models/model_v8.hpp"
-#include "yolo_onnx/models/model_ppyoloe.hpp"
-#include "yolo_onnx/models/model_v8_segment.hpp"
-#include "yolo_onnx/models/model_v8_pose.hpp"
-#include "yolo_onnx/models/model_v8_obb.hpp"
+#include "core/onnxruntime_backend.hpp"
+#include "process/preprocess/preprocess.hpp"
+#include "models/detect/v5.hpp"
+#include "models/detect/yolox.hpp"
+#include "models/detect/v8.hpp"
+#include "models/detect/ppyoloe.hpp"
+#include "models/segment/v8.hpp"
+#include "models/pose/v8.hpp"
+#include "models/obb/v8.hpp"
 #include <opencv2/imgproc.hpp>
 #include <iostream>
 
@@ -74,49 +75,16 @@ bool Model::load(const Config& config) {
 }
 
 PreProcessResult Model::preprocess(const cv::Mat& image, int target_w, int target_h) const {
-    PreProcessResult result;
-
-    int img_w = image.cols;
-    int img_h = image.rows;
-
-    // 1. Letterbox resize (maintain aspect ratio with padding)
-    float scale = std::min((float)target_w / img_w, (float)target_h / img_h);
-    int new_w = (int)(img_w * scale);
-    int new_h = (int)(img_h * scale);
-    int pad_left = (target_w - new_w) / 2;
-    int pad_top  = (target_h - new_h) / 2;
-
-    // Resize
-    cv::Mat resized;
-    cv::resize(image, resized, cv::Size(new_w, new_h));
-
-    // Pad to target size
-    cv::Mat canvas(target_h, target_w, CV_8UC3, cv::Scalar(114, 114, 114));
-    resized.copyTo(canvas(cv::Rect(pad_left, pad_top, new_w, new_h)));
-
-    result.letterbox = {
-        scale, pad_left, pad_top,
-        img_w, img_h, target_w, target_h
-    };
-
-    // 2. Convert to NCHW float blob (BGR → RGB, normalize to [0,1])
-    result.blob.resize(3 * target_h * target_w);
-    for (int c = 0; c < 3; c++) {
-        for (int h = 0; h < target_h; h++) {
-            for (int w = 0; w < target_w; w++) {
-                // BGR → RGB channel swap
-                int src_c = (config_.model_type == ModelType::PPYOLOE) ? c : (2 - c);
-                float v = canvas.at<cv::Vec3b>(h, w)[src_c] / 255.0f;
-                // ch index in RGB order: for RGB output channel c, ch == c;
-                // for BGR-ordered PPYOLOE, map channel index accordingly.
-                int ch = (config_.model_type == ModelType::PPYOLOE) ? (2 - c) : c;
-                result.blob[c * target_h * target_w + h * target_w + w] =
-                    normalize_channel(v, ch);
-            }
-        }
+    // 复用独立的 PreProcess 模块（懒初始化，跟随最新 config_ 的输入尺寸）
+    if (!preprocess_ ||
+        preprocess_->params().target_width != target_w ||
+        preprocess_->params().target_height != target_h) {
+        auto params = make_preprocess_params();
+        params.target_width = target_w;
+        params.target_height = target_h;
+        preprocess_ = std::make_shared<PreProcess>(params);
     }
-
-    return result;
+    return preprocess_->run(image);
 }
 
 // ============================================================

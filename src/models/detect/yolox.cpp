@@ -1,5 +1,5 @@
-#include "yolo_onnx/models/model_yolox.hpp"
-#include "yolo_onnx/backend.hpp"
+#include "models/detect/yolox.hpp"
+#include "core/backend.hpp"
 #include <iostream>
 
 namespace yolo_onnx {

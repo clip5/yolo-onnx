@@ -192,44 +192,36 @@ struct PreProcessResult {
 };
 
 // ============================================================
+// 预处理参数（描述一个模型对输入张量的要求）
+// ============================================================
+struct PreProcessParams {
+    int   target_width   = 640;
+    int   target_height  = 640;
+    bool  swap_rb        = true;    // BGR→RGB（PPYOLOE 等保持 BGR 时为 false）
+    float scale_factor   = 1.0f / 255.0f;  // 像素缩放
+    // 可选的每通道 mean/std（在 scale_factor 之后应用: (v*scale - mean) / std）
+    float mean[3] = {0.0f, 0.0f, 0.0f};
+    float std[3]  = {1.0f, 1.0f, 1.0f};
+
+    /// 按模型类型给出默认参数（实现在 src/process/preprocess/preprocess.cpp）
+    static PreProcessParams for_model(ModelType type, int width, int height);
+};
+
+// ============================================================
 // Utility functions
 // ============================================================
 inline float sigmoid(float x) {
     return 1.0f / (1.0f + std::exp(-x));
 }
 
-inline float iou(const Box& a, const Box& b) {
-    float inter_x1 = std::max(a.x1, b.x1);
-    float inter_y1 = std::max(a.y1, b.y1);
-    float inter_x2 = std::min(a.x2, b.x2);
-    float inter_y2 = std::min(a.y2, b.y2);
-    float inter_area = std::max(0.0f, inter_x2 - inter_x1) * std::max(0.0f, inter_y2 - inter_y1);
-    float union_area = a.area() + b.area() - inter_area;
-    if (union_area <= 0.0f) return 0.0f;
-    return inter_area / union_area;
-}
+// IoU / NMS 实现在 src/process/postprocess/postprocess.cpp（模块内部使用，
+// 但属于对外工具 API，故在此声明）
 
-/// CPU NMS (for regular boxes)
-inline std::vector<int> nms(const BoxArray& boxes, float iou_threshold) {
-    std::vector<int> indices;
-    std::vector<int> order(boxes.size());
-    for (int i = 0; i < (int)boxes.size(); i++) order[i] = i;
-    std::sort(order.begin(), order.end(), [&](int i, int j) {
-        return boxes[i].score > boxes[j].score;
-    });
-    std::vector<bool> removed(boxes.size(), false);
-    for (int i = 0; i < (int)order.size(); i++) {
-        if (removed[order[i]]) continue;
-        indices.push_back(order[i]);
-        for (int j = i + 1; j < (int)order.size(); j++) {
-            if (removed[order[j]]) continue;
-            if (iou(boxes[order[i]], boxes[order[j]]) > iou_threshold) {
-                removed[order[j]] = true;
-            }
-        }
-    }
-    return indices;
-}
+/// 两框 IoU
+float iou(const Box& a, const Box& b);
+
+/// CPU NMS（for regular boxes），返回保留框的索引
+std::vector<int> nms(const BoxArray& boxes, float iou_threshold);
 
 /// Scale box from model output space back to original image
 inline void scale_box(Box& box, const LetterboxInfo& info) {

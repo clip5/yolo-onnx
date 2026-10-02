@@ -2,3 +2,4 @@ build*
 *.so
 *.a
 *.o
+output

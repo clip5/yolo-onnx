@@ -10,10 +10,13 @@ public:
     InferResult infer(const cv::Mat& image) override;
 protected:
     /// YOLOX expects ImageNet mean/std normalization
-    float normalize_channel(float v, int ch) const override {
+    PreProcessParams make_preprocess_params() const override {
+        auto p = PreProcessParams::for_model(config_.model_type,
+                                             config_.input_width, config_.input_height);
         static const float mean[3] = {0.485f, 0.456f, 0.406f};
         static const float std_[3] = {0.229f, 0.224f, 0.225f};
-        return (v - mean[ch]) / std_[ch];
+        for (int c = 0; c < 3; c++) { p.mean[c] = mean[c]; p.std[c] = std_[c]; }
+        return p;
     }
 
     BoxArray decode_output(
