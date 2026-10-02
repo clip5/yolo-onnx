@@ -5,6 +5,47 @@
 
 namespace yolo_onnx {
 
+namespace {
+
+/// ONNX Runtime 的 EP 名字是大小写混合的（CoreML / DML / QNN / MIGraphX /
+/// NvTensorRtRtx …），generic AppendExecutionProvider 按字符串精确匹配，
+/// 所以不能一律 toupper。这里做一次规范化，让用户写 ep=coreml /
+/// ep=CoreML / ep=COREML 都能命中。
+std::string canonical_ep_name(const std::string& raw) {
+    static const std::unordered_map<std::string, std::string> kNames = {
+        {"CPU",         "CPU"},
+        {"CUDA",        "CUDA"},
+        {"TENSORRT",    "TENSORRT"},
+        {"TRT",         "TENSORRT"},
+        {"OPENVINO",    "OPENVINO"},
+        {"ROCM",        "ROCM"},
+        {"MIGRAPHX",    "MIGraphX"},
+        {"VITISAI",     "VitisAI"},
+        {"QNN",         "QNN"},
+        {"SNPE",        "SNPE"},
+        {"XNNPACK",     "XNNPACK"},
+        {"COREML",      "CoreML"},
+        {"DML",         "DML"},
+        {"WEBNN",       "WEBNN"},
+        {"WEBGPU",      "WebGPU"},
+        {"AZURE",       "AZURE"},
+        {"JS",          "JS"},
+        {"NVTENSORRTRTX", "NvTensorRtRtx"},
+    };
+
+    std::string upper;
+    upper.reserve(raw.size());
+    for (auto c : raw) upper += static_cast<char>(toupper(static_cast<unsigned char>(c)));
+
+    auto it = kNames.find(upper);
+    if (it != kNames.end()) return it->second;
+
+    // 未知 EP：原样交给 ORT，让它自己报错（错误信息更准确）
+    return upper;
+}
+
+} // namespace
+
 OnnxruntimeBackend::OnnxruntimeBackend()
     : memory_info_(Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault))
     , session_(nullptr)
@@ -14,7 +55,9 @@ OnnxruntimeBackend::OnnxruntimeBackend()
 
 OnnxruntimeBackend::~OnnxruntimeBackend() = default;
 
-bool OnnxruntimeBackend::setup_execution_providers(const std::string& custom_config, int device_id) {
+bool OnnxruntimeBackend::setup_execution_providers(const std::string& custom_config,
+                                                   int device_id,
+                                                   int num_threads) {
     // Parse custom_config for ep=xxx
     // Format: key=value;key=value;...
     // Supported keys:
@@ -31,11 +74,23 @@ bool OnnxruntimeBackend::setup_execution_providers(const std::string& custom_con
     int ep_device_id = device_id;
 
     // Parse key=value pairs
+    bool enable_fp16_flag = false;
+    std::unordered_map<std::string, std::string> ep_options;
     std::istringstream stream(custom_config);
     std::string token;
     while (std::getline(stream, token, ';')) {
         auto eq = token.find('=');
-        if (eq == std::string::npos) continue;
+        if (eq == std::string::npos) {
+            // 无值 flag（如 --fp16）
+            std::string flag = token;
+            auto trim = [](std::string& s) {
+                s.erase(0, s.find_first_not_of(" \t"));
+                s.erase(s.find_last_not_of(" \t") + 1);
+            };
+            trim(flag);
+            if (flag == "--fp16") enable_fp16_flag = true;
+            continue;
+        }
 
         std::string key = token.substr(0, eq);
         std::string val = token.substr(eq + 1);
@@ -49,11 +104,12 @@ bool OnnxruntimeBackend::setup_execution_providers(const std::string& custom_con
         trim(val);
 
         if (key == "ep") {
-            ep_name = val;
-            // Uppercase the EP name for ONNX Runtime
-            for (auto& c : ep_name) c = toupper(c);
-        } else if (key == "device") {
+            ep_name = canonical_ep_name(val);
+        } else if (key == "device" || key == "--device") {
             ep_device_id = std::stoi(val);
+        } else {
+            // 其余 key=value 原样透传给 EP（如 OpenVINO 的 device_type）
+            ep_options[key] = val;
         }
     }
 
@@ -63,14 +119,66 @@ bool OnnxruntimeBackend::setup_execution_providers(const std::string& custom_con
         return true;
     }
 
-    // Register the execution provider (ONNX Runtime 1.14+ string-based API)
-    // This does NOT require compile-time linking to EP-specific libraries —
-    // the onnxruntime shared library handles it internally.
-    std::unordered_map<std::string, std::string> ep_options;
-    ep_options["device_id"] = std::to_string(ep_device_id);
-
+    // ============================================================
+    // EP 分派
+    // ============================================================
+    // ONNX Runtime 1.23 里 generic 的 AppendExecutionProvider(name, opts)
+    // 只接受固定白名单（QNN/SNPE/XNNPACK/OpenVINO/CoreML/...），
+    // CUDA / TensorRT / ROCm / CANN 等必须走各自的专用 API。
+    // provider 动态库（libonnxruntime_providers_*.so）由 onnxruntime
+    // 在运行时 dlopen，编译期无需链接。
+    //
+    // 新增 EP 时只需在下面加一个分支；EP 不可用时 ORT 抛异常，
+    // 这里统一回退 CPU，不让整个推理失败。
+    // ============================================================
     try {
-        session_options_.AppendExecutionProvider(ep_name, ep_options);
+        if (ep_name == "CUDA") {
+            // 注意：CUDA EP 没有 fp16 开关（V2 的 provider options 里也没有），
+            // fp16 只有 TensorRT EP 支持。--fp16 对 CUDA EP 无效果。
+            OrtCUDAProviderOptions cuda_opts{};
+            cuda_opts.device_id = ep_device_id;
+            session_options_.AppendExecutionProvider_CUDA(cuda_opts);
+        } else if (ep_name == "TENSORRT") {
+            OrtTensorRTProviderOptions trt_opts{};
+            trt_opts.device_id = ep_device_id;
+            trt_opts.trt_fp16_enable = enable_fp16_flag;
+            trt_opts.trt_max_partition_iterations = 1000;
+            trt_opts.trt_min_subgraph_size = 1;
+            // 缓存 engine，避免每次加载都重新 build（build 一次要几十秒）
+            trt_opts.trt_engine_cache_enable = 1;
+            trt_opts.trt_engine_cache_path = "/tmp";
+            session_options_.AppendExecutionProvider_TensorRT(trt_opts);
+        } else if (ep_name == "OPENVINO") {
+            // OpenVINO EP：device_type 为 CPU_FP32/CPU_FP16/GPU_FP32/GPU_FP16
+            OrtOpenVINOProviderOptions ov_opts{};
+            // device_id 是 const char*，必须保证生命周期覆盖整个 Append 调用
+            std::string device_id_str = std::to_string(ep_device_id);
+            const char* device_type = nullptr;
+            if (enable_fp16_flag) {
+                device_type = ep_device_id == 0 ? "CPU_FP16" : "GPU_FP16";
+            } else {
+                device_type = ep_device_id == 0 ? "CPU_FP32" : "GPU_FP32";
+            }
+            ov_opts.device_type   = device_type;
+            ov_opts.device_id     = ep_device_id == 0 ? nullptr : device_id_str.c_str();
+            ov_opts.num_of_threads = num_threads;
+            session_options_.AppendExecutionProvider_OpenVINO(ov_opts);
+        } else if (ep_name == "ROCM") {
+            OrtROCMProviderOptions rocm_opts{};
+            rocm_opts.device_id = ep_device_id;
+            session_options_.AppendExecutionProvider_ROCM(rocm_opts);
+        } else if (ep_name == "MIGraphX") {
+            OrtMIGraphXProviderOptions migraphx_opts{};
+            migraphx_opts.device_id = ep_device_id;
+            session_options_.AppendExecutionProvider_MIGraphX(migraphx_opts);
+        } else if (ep_name == "VitisAI") {
+            session_options_.AppendExecutionProvider_VitisAI(ep_options);
+        } else {
+            // 白名单 EP：QNN / SNPE / XNNPACK / CoreML / DML / WEBNN /
+            // WebGPU / AZURE / JS / NvTensorRtRtx（名字已规范化）
+            ep_options["device_id"] = std::to_string(ep_device_id);
+            session_options_.AppendExecutionProvider(ep_name, ep_options);
+        }
         name_ = "onnxruntime/" + ep_name;
         std::cout << "[OnnxruntimeBackend] Using execution provider: " << ep_name
                   << " (device=" << ep_device_id << ")" << std::endl;
@@ -92,7 +200,7 @@ bool OnnxruntimeBackend::load(const Config& config) {
         session_options_.SetInterOpNumThreads(config.num_threads);
 
         // Register execution provider (before creating session)
-        setup_execution_providers(config.custom_config, config.device_id);
+        setup_execution_providers(config.custom_config, config.device_id, config.num_threads);
 
         // Create session
         session_ = Ort::Session(env_, config.model_path.c_str(), session_options_);
@@ -234,16 +342,6 @@ std::vector<std::string> OnnxruntimeBackend::get_output_names() const {
 
 std::vector<std::vector<int64_t>> OnnxruntimeBackend::get_output_shapes() const {
     return output_shapes_;
-}
-
-// Backend factory — only ONNX Runtime backed by EP
-std::shared_ptr<Backend> create_backend(const std::string& backend_name) {
-    if (backend_name == "onnxruntime") {
-        return std::make_shared<OnnxruntimeBackend>();
-    }
-    std::cerr << "[create_backend] Unknown backend: " << backend_name << std::endl;
-    std::cerr << "[create_backend] Supported backends: onnxruntime" << std::endl;
-    return nullptr;
 }
 
 } // namespace yolo_onnx

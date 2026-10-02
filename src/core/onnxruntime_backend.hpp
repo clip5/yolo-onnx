@@ -55,7 +55,9 @@ private:
     bool loaded_{false};
 
     /// Parse custom_config and register execution providers
-    bool setup_execution_providers(const std::string& custom_config, int device_id);
+    bool setup_execution_providers(const std::string& custom_config,
+                                   int device_id,
+                                   int num_threads);
 };
 
 } // namespace yolo_onnx

@@ -11,9 +11,15 @@ namespace yolo_onnx {
 // ============================================================
 // Inference Backend Interface
 // ============================================================
-// 当前只有 onnxruntime 一个后端，硬件加速通过 ONNX Runtime
-// Execution Provider 实现（CUDA / TensorRT / CANN 等），
-// 在 Config::custom_config 中通过 ep=xxx 指定。
+// 主线后端是 onnxruntime：硬件加速通过 ONNX Runtime 的
+// Execution Provider 实现（CUDA / TensorRT / OpenVINO / QNN /
+// CoreML 等），在 Config::custom_config 中通过 ep=xxx 指定。
+// EP 由 onnxruntime 在运行时 dlopen 对应的
+// libonnxruntime_providers_*.so，编译期零依赖。
+//
+// 其余后端是"独立运行时"（不走 ORT，直接调厂商 SDK），
+// 在 create_backend()（src/core/backend_factory.cpp）注册，
+// 默认关闭。
 // ============================================================
 
 class Backend {
@@ -60,7 +66,8 @@ public:
 };
 
 /// Factory function: create a backend by name
-/// Supported: "onnxruntime"
+/// 默认只提供 "onnxruntime"；其它后端需在 backend_factory.cpp
+/// 中启用对应的编译宏后才会注册。
 std::shared_ptr<Backend> create_backend(const std::string& backend_name);
 
 } // namespace yolo_onnx

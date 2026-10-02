@@ -33,6 +33,7 @@ include_directories(
 
 # ---- Sources ----
 set(YOLO_ONNX_SOURCES
+    src/core/backend_factory.cpp
     src/core/onnxruntime_backend.cpp
     src/process/preprocess/preprocess.cpp
     src/process/postprocess/postprocess_core.cpp
