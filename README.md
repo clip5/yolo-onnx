@@ -1,303 +1,285 @@
 # yolo-onnx
 
-基于 ONNX Runtime 的 C++ YOLO 推理框架，支持多种 YOLO 模型变体，设计为可扩展的多后端架构。
+基于 ONNX Runtime 的 C++17 YOLO 推理框架。一条 `.onnx` 走到底，硬件加速通过 Execution Provider 切换，编译期零 EP 依赖。
 
-## 功能特性
+[![C++17](https://img.shields.io/badge/C++-17-00599C.svg)]()
+[![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-1.12%2B-00599C.svg)]()
+[![OpenCV](https://img.shields.io/badge/OpenCV-4.x-00599C.svg)]()
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)]()
 
-### 支持的模型
+<div align="center">
+  <img src="assets/results/detect_bus.jpg" width="32%">
+  <img src="assets/results/segment_bus.jpg" width="32%">
+  <img src="assets/results/pose_bus.jpg" width="32%">
+  <p><em>YOLO26 检测 · YOLO26 分割 · YOLO26 姿态估计 —— 均为本框架在 bus.jpg 上的实际推演输出</em></p>
+</div>
 
-| 模型 | 类型 | 输出格式 | 解码方式 |
-|------|------|---------|---------|
-| **YOLOv5** | Anchor-based | 3 输出 (P3/P4/P5) | sigmoid + exp + anchor |
-| **YOLOX** | Anchor-free | 3 输出 / 1 拼接 | sigmoid + exp |
-| **YOLOv8** | Anchor-free | 1 拼接输出 [1,C,N] | 直接解码 / DFL |
-| **YOLOv11** | Anchor-free | 1 拼接输出 [1,C,N] | 同 v8 |
-| **YOLO26** | Anchor-free | 1 拼接输出 [1,C,N] | 同 v8 |
-| **PPYOLOE** | Anchor-free | 6 输出 (3cls+3reg) / 3 输出 / 1 拼接 | sigmoid + exp |
+## ✨ 特性
 
-### 推理后端架构
+- 🧩 **模型覆盖广**：YOLOv5 / YOLOX / YOLOv8 / YOLOv11 / YOLO26 / PPYOLOE，每种格式一个 `Decoder` 子类，互不干扰
+- 🚀 **多任务统一接口**：检测 / 分割 / 姿态 / 旋转框共用一条管线，返回 `std::variant`，无 `dynamic_cast`
+- ⚡ **EP 即插即用**：CUDA / TensorRT / OpenVINO / ROCm / MIGraphX / VitisAI / QNN / CoreML / XNNPACK… 换 EP 只改一个参数，**不需要重新编译**（EP 动态库由 onnxruntime 运行时加载）
+- 🧪 **可验证的准确性**：`tools/` 提供与 ultralytics / onnxruntime 参考实现逐框比对的工具链，精度问题用数字说话而不是肉眼看图
+- 🪶 **零隐藏依赖**：对外仅两个头文件（`yolo_onnx.hpp` + `yolo_onnx_types.hpp`），后端/前后处理全在 `src/` 内部
+- 🔌 **可独立复用**：`postprocess_core.hpp` 的 NMS / IoU / 坐标还原是 header-only 自由函数，可直接拷进其他项目
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                     yolo_onnx                            │
-│ ┌──────────┐  ┌──────────┐  ┌──────────────────┐        │
-│ │ ModelV5  │  │ ModelV8  │  │ ModelPPYOLOE     │        │
-│ │ ModelYOLOX│  │ (v11/v26)│  │                  │        │
-│ └─────┬────┘  └────┬─────┘  └────────┬─────────┘        │
-│       │             │                 │                  │
-│ ┌─────┴─────────────┴─────────────────┴──────────────┐  │
-│ │              Backend Interface                      │  │
-│ │          load() / forward() / info()                │  │
-│ └─────┬──────────────┬────────────────┬───────────────┘  │
-│       │              │                │                  │
-│ ┌─────┴─────┐  ┌─────┴─────┐  ┌──────┴───────┐          │
-│ │ onnxruntime│  │  tensorrt  │  │  cann  │ rknn│          │
-│ │   (CPU)   │  │ (GPU/FP16) │  │(Ascend│(Rockchip)      │
-│ └───────────┘  └───────────┘  └────────────────┘          │
-└─────────────────────────────────────────────────────────┘
-```
+## 📊 性能实测
 
-## 快速开始
+在 **RTX 4070 Ti SUPER** + **i5-10400F(12 线程)** 上实测，`yolo11n` 640×640、batch=1、100 次取平均，统计的是 **端到端 `Model::infer()`**（含 letterbox 预处理、NMS、可视化前的全部流程）：
+
+| 后端 | 端到端延迟 | 吞吐 | 相对 CPU |
+|------|-----------|------|---------|
+| ONNX Runtime CPU | 47.6 ms | 21 fps | 1.0× |
+| OpenVINO CPU | 32.1 ms | 31 fps | 1.5× |
+| OpenVINO GPU (Intel 核显) | 14.3 ms | 70 fps | 3.3× |
+| **ONNX Runtime CUDA EP** | **8.1 ms** | **123 fps** | **5.8×** |
+| **ONNX Runtime TensorRT EP (FP16)** | **7.1 ms** | **141 fps** | **6.7×** |
+
+> TensorRT EP 首次加载会构建 engine（约 1 分钟），已默认开启 engine 缓存（`/tmp`），后续加载秒开。
+> 上表由 `Model::infer()` 端到端测得（预处理 + 推理 + 解码 + NMS 全流程），固定 1920×1080 输入、batch=1、100 次取平均。
+
+## 📑 目录
+
+- [yolo-onnx](#yolo-onnx)
+  - [✨ 特性](#-特性)
+  - [📊 性能实测](#-性能实测)
+  - [🚀 快速开始](#-快速开始)
+  - [🧩 C++ 用法](#-c-用法)
+  - [🧠 架构](#-架构)
+  - [🔌 后端与 Execution Provider](#-后端与-execution-provider)
+  - [🧪 准确性验证工具](#-准确性验证工具)
+  - [🧱 扩展](#-扩展)
+  - [📁 项目结构](#-项目结构)
+  - [📚 详细文档](#-详细文档)
+
+## 🚀 快速开始
 
 ### 依赖
 
 - C++17 编译器
-- OpenCV (>= 4.x)
-- ONNX Runtime (>= 1.12)
+- OpenCV >= 4.x
+- ONNX Runtime >= 1.12（CPU 版即可跑通全部功能；GPU 加速需官方 `onnxruntime-gpu` 包）
 
 ### 构建
 
 ```bash
-# 安装依赖
-# Ubuntu:
-sudo apt install libopencv-dev
+git clone <this-repo> && cd yolo-onnx
 
-# 下载 ONNX Runtime
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.18.0/onnxruntime-linux-x64-1.18.0.tgz
-tar -xzf onnxruntime-linux-x64-1.18.0.tgz
-export ONNXRUNTIME_DIR=/path/to/onnxruntime-linux-x64-1.18.0
+# 指定 ONNX Runtime 位置（也可用环境变量 ONNXRUNTIME_DIR）
+export ONNXRUNTIME_DIR=/path/to/onnxruntime-linux-x64-1.23.2
 
-# 基本构建（仅 ONNX Runtime CPU 后端）
-cd yolo-onnx
 mkdir build && cd build
 cmake .. -DWITH_EXAMPLES=ON -DWITH_TESTS=ON
 make -j$(nproc)
 
-# 构建时启用特定后端（需要预先安装对应 SDK）
-# TensorRT 后端（NVIDIA GPU）
-cmake .. -DWITH_EXAMPLES=ON -DWITH_TENSORRT=ON \
-    -DTENSORRT_DIR=/path/to/TensorRT
-
-# CANN 后端（Huawei Ascend NPU）
-cmake .. -DWITH_EXAMPLES=ON -DWITH_CANN=ON \
-    -DASCEND_DIR=/path/to/Ascend
-
-# RKNN 后端（Rockchip NPU）
-cmake .. -DWITH_EXAMPLES=ON -DWITH_RKNN=ON \
-    -DRKNN_DIR=/path/to/rknn
-
-# 启用多个后端
-cmake .. -DWITH_EXAMPLES=ON \
-    -DWITH_TENSORRT=ON -DWITH_CANN=ON -DWITH_RKNN=ON
+./tests/test_yolo        # 70 个单元测试
 ```
 
-### 使用示例
+CMake 选项（默认全关）：
+
+| 选项 | 说明 |
+|------|------|
+| `WITH_EXAMPLES` | 构建 `examples/`（默认 **ON**） |
+| `WITH_TESTS` | 构建 `tests/test_yolo` |
+| `WITH_TOOLS` | 构建 `tools/dump_json`（精度比对用） |
+| `WITH_PYTHON` | 构建 pybind11 绑定（`python/`） |
+
+### 命令行推理
 
 ```bash
-# 单图推理（ONNX Runtime CPU 后端）
-./examples/detect_image v8 /path/to/yolov8n.onnx input.jpg output.jpg
+# 检测（默认 CPU）
+./examples/detect_image v11 ../assets/models/yolo11n.onnx ../assets/images/bus.jpg out.jpg
 
-# 使用 TensorRT 后端（NVIDIA GPU）
-./examples/detect_image v8 model.onnx input.jpg output.jpg \
-    --backend=tensorrt --device=0 --fp16
+# 换 Execution Provider —— 同一个二进制，无需重编译
+./examples/detect_image v11 model.onnx bus.jpg out.jpg --ep=cuda
+./examples/detect_image v11 model.onnx bus.jpg out.jpg --ep=tensorrt --fp16
 
-# 使用 CANN 后端（Ascend NPU，需要 .om 模型）
-./examples/detect_image v8 model.om input.jpg output.jpg \
-    --backend=cann --device=0
+# 分割
+./examples/segment_image v11 ../assets/models/yolo11s-seg640.onnx bus.jpg out.jpg --ep=cuda
 
-# 使用 RKNN 后端（Rockchip NPU，需要 .rknn 模型）
-./examples/detect_image v8 model.rknn input.jpg output.jpg \
-    --backend=rknn
+# 姿态估计
+./examples/pose_image v26 ../assets/models/yolo26s-pose.onnx ../assets/images/bus.jpg out.jpg --ep=cuda
 
-# 自定义参数
-./examples/detect_image v5 model.onnx input.jpg output.jpg \
-    --score=0.5 --nms=0.45 --size=640 --classes=80 --threads=4
+# 调整阈值 / 输入尺寸 / 类别数
+./examples/detect_image v5 model.onnx in.jpg out.jpg --score=0.25 --nms=0.45 --size=640 --classes=80
 ```
 
-### 代码中使用
+`model_type` 取值：`v5` / `yolox` / `v8` / `v11` / `v26` / `ppyoloe`。
+
+输出：
+
+```
+Detected 5 objects:
+  label=5 score=0.876215 rect=[4,260,805,751]
+  label=0 score=0.875915 rect=[52,436,243,935]
+  ...
+```
+
+## 🧩 C++ 用法
+
+### 检测
 
 ```cpp
 #include "yolo_onnx/yolo_onnx.hpp"
 #include <opencv2/opencv.hpp>
 
-// 1. 创建模型
-auto model = yolo_onnx::create_model(yolo_onnx::ModelType::YOLOv8);
+auto model = yolo_onnx::create_model(yolo_onnx::ModelType::YOLOv11);
 
-// 2. 配置并加载
 yolo_onnx::Model::Config config;
-config.model_path   = "yolov8n.onnx";
-config.score_thresh = 0.5f;
-config.nms_thresh   = 0.45f;
-config.num_classes  = 80;
+config.model_path    = "yolo11n.onnx";
+config.score_thresh  = 0.5f;
+config.nms_thresh    = 0.45f;
+config.custom_config = "ep=cuda";        // 换 EP 只改这一行
 model->load(config);
 
-// 3. 推理
-cv::Mat image = cv::imread("image.jpg");
-auto boxes = model->infer(image);
+cv::Mat image = cv::imread("bus.jpg");
+yolo_onnx::DetectResult det = model->infer_detect(image);
 
-// 4. 遍历结果
-for (const auto& box : boxes) {
+for (const auto& box : det.boxes) {
     printf("label=%d score=%.3f [%.0f,%.0f,%.0f,%.0f]\n",
            box.label, box.score, box.x1, box.y1, box.x2, box.y2);
 }
 ```
 
-### 多任务推理（Segment / Pose / OBB）
+### 多任务：分割 / 姿态 / 旋转框
 
-创建模型时指定任务类型，使用统一的 `infer_task()` 接口，无需 `dynamic_cast`：
+四个任务共用一个 `Model`，结果用 `std::variant` 返回，`std::get_if` 安全提取：
 
 ```cpp
-#include "yolo_onnx/yolo_onnx.hpp"
-
-// 创建分割模型
-auto model = yolo_onnx::create_model(yolo_onnx::ModelType::YOLOv8,
+auto model = yolo_onnx::create_model(yolo_onnx::ModelType::YOLOv11,
                                      yolo_onnx::TaskType::Segment);
-
-// 配置并加载
-yolo_onnx::Model::Config config;
-config.model_path = "yolov8n-seg.onnx";
-config.task_type  = yolo_onnx::TaskType::Segment;
 model->load(config);
 
-// 统一推理接口 — 返回 std::variant
-yolo_onnx::InferResult result = model->infer_task(image);
+yolo_onnx::InferResult result = model->infer(image);
 
-// 用 std::get_if 安全提取结果
 if (auto* seg = std::get_if<yolo_onnx::SegmentResult>(&result)) {
-    for (size_t i = 0; i < seg->boxes.size(); i++) {
-        // seg->boxes[i]  — 检测框
-        // seg->masks[i]  — 分割掩码
-    }
+    // seg->boxes[i] — 检测框
+    // seg->masks[i] — 分割掩码（已还原到原图尺寸）
+} else if (auto* pose = std::get_if<yolo_onnx::PoseResult>(&result)) {
+    // pose->boxes[i].keypoints
+} else if (auto* obb = std::get_if<yolo_onnx::OBBResult>(&result)) {
+    // obb->obb_boxes[i] — 旋转框 (cx, cy, w, h, angle)
 }
-
-// 其他任务类型：
-//   yolo_onnx::TaskType::Pose  → PoseResult (boxes + keypoints)
-//   yolo_onnx::TaskType::OBB   → OBBResult  (obb_boxes)
-//   yolo_onnx::TaskType::Detect → DetectResult (boxes)
-// 传统 detect 任务也可用 model->infer(image) 直接返回 BoxArray
 ```
 
-## 扩展新后端
+也可用类型化入口：`infer_detect()` / `infer_segment()` / `infer_pose()` / `infer_obb()`。
 
-实现 `Backend` 接口并注册到工厂即可：
+## 🧠 架构
 
-```cpp
-#include "yolo_onnx/backend.hpp"
+管线是一条直线，每个环节都 behind 一个抽象接口，**新增模型格式或新任务都不需要改主干**：
 
-class MyBackend : public yolo_onnx::Backend {
-    // 实现所有虚函数...
-};
-
-// 在 create_backend() 中注册
-// 参见 src/backends/onnxruntime_backend.cpp
+```
+image → PreProcess → Backend(forward) → TensorSet → Decoder → PostProcess → InferResult
+        预处理         推理引擎         统一张量      解码       任务后处理      结果
 ```
 
-### 已支持的后端
+```
+yolo_onnx
+├── Backend (src/core/)              ← 推理引擎，EP 切换在这里
+│   └── OnnxruntimeBackend           ← 主线：CPU / CUDA / TensorRT / OpenVINO / ...
+│       └── (可选) OpenvinoBackend   ← 独立运行时，默认不编译
+├── PreProcess (src/process/preprocess/)
+│   └── PreProcessParams::for_model()  ← 每种模型的差异化预处理都在这里
+├── Decoder (src/process/postprocess/decoder/)
+│   └── V5Decoder / YOLOXDecoder / V8Decoder / PPYOLOEDecoder
+├── PostProcess (src/process/postprocess/)
+│   ├── postprocess_core.hpp          ← 零依赖自由函数（nms / iou / restore_* / detect_pipeline）
+│   └── Detect / Segment / Pose / OBB ← 只做任务分派，逻辑复用 core
+└── Model (src/model.cpp)            ← 单一 Model 类 + PIMPL，无任何子类
+```
 
-| 后端 | 名称 | 目标平台 | 模型格式 | 精度支持 |
-|------|------|---------|---------|---------|
-| **ONNX Runtime** | `onnxruntime` | CPU | `.onnx` | FP32 |
-| **TensorRT** | `tensorrt` | NVIDIA GPU | `.onnx` / `.engine` | FP32 / FP16 / INT8 |
-| **CANN** | `cann` | Huawei Ascend NPU | `.om` | FP16 / INT8 |
-| **RKNN** | `rknn` | Rockchip NPU | `.rknn` | FP16 / INT8 |
+三个正交的设计轴：
 
-### 构建依赖
+| 想加什么 | 改哪里 | 要不要动别的 |
+|---------|-------|------------|
+| 新的导出格式 | 加一个 `Decoder` 子类 + 工厂注册一行 | 不用 |
+| 新的任务 | 加一个 `PostProcess` 子类 + 注册 + 结果类型 | 不用 |
+| 新的 EP | 在 `setup_execution_providers()` 加一个 case | 不用 |
 
-| 后端 | 依赖 | 环境变量 | CMake 选项 |
-|------|------|---------|-----------|
-| ONNX Runtime | onnxruntime | `ONNXRUNTIME_DIR` | 默认启用 |
-| TensorRT | TensorRT + CUDA | `TENSORRT_DIR` | `-DWITH_TENSORRT=ON` |
-| CANN | AscendCL | `ASCEND_DIR` | `-DWITH_CANN=ON` |
-| RKNN | rknn_api | `RKNN_DIR` | `-DWITH_RKNN=ON` |
+## 🔌 后端与 Execution Provider
 
-### 模型转换指南
+**主线是 ONNX Runtime**：所有硬件加速都通过 EP 实现，编译期不链接任何 EP 库，运行时由 onnxruntime `dlopen` 对应的 `libonnxruntime_providers_*.so`。换 EP 只改一个参数，**不用重新编译**。
 
 ```bash
-# ONNX → TensorRT (自动在加载时构建，会自动缓存为 .engine)
-./examples/detect_image v8 model.onnx input.jpg output.jpg --backend=tensorrt
-
-# ONNX → CANN .om (使用 atc 工具)
-atc --model=model.onnx --framework=5 --output=model \
-    --soc_version=Ascend310P3 --input_format=NCHW
-
-# ONNX → RKNN (使用 rknn-toolkit, Python)
-# python -m rknn.api RKNN
-# rknn.load_onnx(model.onnx)
-# rknn.export_rknn(model.rknn)
+--ep=cpu          # 默认
+--ep=cuda         # NVIDIA GPU        --device=N 选卡
+--ep=tensorrt     # NVIDIA GPU + FP16（--fp16 开启，带 engine 缓存）
+--ep=openvino     # Intel CPU/GPU
+--ep=qnn          # 高通 QNN
+--ep=coreml       # Apple 芯片（macOS/iOS）
+--ep=xnnpack      # 移动端 CPU 加速
 ```
 
-## 扩展新模型
+已验证：**CUDA EP** 与 **TensorRT EP** 在 RTX 4070 Ti SUPER 上跑通，输出与 CPU 逐框对齐（score 差异 ~1e-4，EP 间正常浮点误差）。EP 不可用时打印原因并**自动回退 CPU**，不会让整个推理失败。
 
-继承 `Model` 基类，实现 `decode_output()` 纯虚函数：
+> 完整 EP 列表（专用 API vs 通用白名单）、独立运行时后端（OpenVINO / CANN / RKNN）、以及踩过的坑 —— 见 **[src/core/README.md](src/core/README.md)**
 
-```cpp
-class MyYOLO : public yolo_onnx::Model {
-    BoxArray decode_output(
-        const std::vector<std::vector<float>>&   output_data,
-        const std::vector<std::vector<int64_t>>& output_shapes
-    ) const override;
-};
-```
+## 🧪 准确性验证工具
 
-## Python 绑定（计划中）
+`tools/` 提供数字化的精度校验链路：**dump JSON → 跑参考实现 → 逐框 IoU 比对**。精度问题应该用数字定位，而不是盯着一张标注图猜——本框架历史上定位到的多个 bug（YOLOX 二次 sigmoid、预处理用错、掩码坐标系错位、pose 二次 sigmoid）在看图时**完全不可见**，但在 IoU 数字上极其明显。
 
 ```bash
-cmake .. -DWITH_PYTHON=ON
+./tools/dump_json v11 detect ../assets/models/yolo11n.onnx ../assets/images/bus.jpg out/cpp/bus.json
+python3 tools/ref_onnx.py --model ../assets/models/yolo11n.onnx --task detect \
+        --image ../assets/images/bus.jpg --out out/ref/bus.json
+python3 tools/compare.py --cpp out/cpp/bus.json --ref out/ref/bus.json --iou 0.5
 ```
 
-```python
-import yolo_onnx
+> 各脚本用法、掩码校验（`check_masks_ul.py`）、预处理扫描、历史 bug 复盘 —— 见 **[tools/README.md](tools/README.md)**
 
-model = yolo_onnx.Model("yolov8n.onnx", type="v8")
-boxes = model.infer("image.jpg")
-```
+## 🧱 扩展
 
-## 项目结构
+三条**正交**的扩展轴，各自独立：
+
+| 想加什么 | 要改的地方 | 不用改的 |
+|---------|-----------|---------|
+| 新的**导出格式** | 加一个 `Decoder` 子类 + 工厂注册 | `Model` / `PostProcess` / CMake |
+| 新的**任务** | 加一个 `PostProcess` 子类 + 结果类型 | `Model` / `Decoder` |
+| 新的**EP** | 一个 case（不用建类） | 整条推理管线 |
+| 差异化的**预处理** | `PreProcessParams::for_model()` | 解码 / 后处理 |
+
+> 完整步骤、接口签名、Decoder 契约与注意事项 —— 见 **[docs/extending.md](docs/extending.md)**
+
+## 📁 项目结构
 
 ```
 yolo-onnx/
-├── CMakeLists.txt
-├── include/yolo_onnx/
-│   ├── yolo_onnx.hpp           # 统一对外接口头文件
-│   ├── yolo_onnx_types.hpp   # 核心类型：Box, ModelType, InferResult, 工具函数
-│   ├── backend.hpp           # 推理后端接口
-│   ├── model.hpp             # 模型基类 + 工厂
-│   ├── backends/
-│   │   ├── onnxruntime_backend.hpp
-│   │   ├── tensorrt_backend.hpp   # TensorRT (GPU)
-│   │   ├── cann_backend.hpp       # CANN (Ascend NPU)
-│   │   └── rknn_backend.hpp       # RKNN (Rockchip NPU)
-│   └── models/
-│       ├── model_v5.hpp
-│       ├── model_yolox.hpp
-│       ├── model_v8.hpp
-│       ├── model_v8_obb.hpp
-│       ├── model_v8_pose.hpp
-│       ├── model_v8_segment.hpp
-│       └── model_ppyoloe.hpp
-├── cmake/
-│   ├── FindONNXRuntime.cmake
-│   ├── FindTensorRT.cmake
-│   ├── FindCANN.cmake
-│   └── FindRKNN.cmake
+├── include/yolo_onnx/            # 对外 API（仅此两个头文件）
+│   ├── yolo_onnx.hpp             #   Model / Config / 推理入口
+│   └── yolo_onnx_types.hpp       #   Box / Mask / TensorSet / InferResult 等 header-only 类型
 ├── src/
-│   ├── backends/
-│   │   ├── onnxruntime_backend.cpp
-│   │   ├── tensorrt_backend.cpp
-│   │   ├── cann_backend.cpp
-│   │   └── rknn_backend.cpp
-│   ├── model.cpp
-│   └── models/
-│       ├── model_v5.cpp
-│       ├── model_yolox.cpp
-│       ├── model_v8.cpp
-│       ├── model_v8_obb.cpp
-│       ├── model_v8_pose.cpp
-│       ├── model_v8_segment.cpp
-│       └── model_ppyoloe.cpp
-├── examples/
-│   ├── CMakeLists.txt
-│   ├── detect_image.cpp
-│   ├── obb_image.cpp
-│   ├── pose_image.cpp
-│   └── segment_image.cpp
-├── tests/
-│   ├── CMakeLists.txt
-│   └── test_yolo.cpp
-└── python/
-    ├── CMakeLists.txt
-    └── python_bindings.cpp
+│   ├── core/                     # 推理后端
+│   │   ├── backend.hpp               #   Backend 抽象接口
+│   │   ├── backend_factory.cpp       #   create_backend() 注册点
+│   │   ├── onnxruntime_backend.*     #   主线：EP 分派
+│   │   └── openvino_backend.*        #   独立后端（默认不编译）
+│   ├── process/
+│   │   ├── preprocess/               #   letterbox + NCHW 打包
+│   │   └── postprocess/
+│   │       ├── postprocess_core.hpp  #   零依赖自由函数（nms/iou/restore_*）
+│   │       ├── detect/segment/pose/obb.cpp
+│   │       └── decoder/              #   按输出格式组织的各版本解码器
+│   ├── model.cpp                  # 单一 Model 类（PIMPL）
+│   └── model_impl.hpp
+├── examples/                     # detect / segment / pose / obb 命令行示例
+├── tools/                        # 精度验证工具链（见 tools/README.md）
+├── tests/test_yolo.cpp           # 70 个单元测试
+├── cmake/FindONNXRuntime.cmake
+├── docs/extending.md             # 扩展指南
+└── assets/                       # 示例模型与图片
 ```
+
+## 📚 详细文档
+
+主 README 只讲怎么用、更细的reference 文档各归其位：
+
+| 文档 | 内容 |
+|------|------|
+| **[tools/README.md](tools/README.md)** | 精度验证工具链：dump_json / ref_onnx / compare / 掩码校验 / 预处理扫描 + 历史 bug 复盘 |
+| **[src/core/README.md](src/core/README.md)** | 后端与 EP：完整 EP 列表、专用 API vs 通用白名单、独立运行时后端、踩过的坑 |
+| **[docs/extending.md](docs/extending.md)** | 扩展指南：四条轴的完整步骤、接口签名、Decoder 契约 |
+| **[python/README.md](python/README.md)** | Python 绑定：构建、用法、导出的 API |
+| [AGENTS.md](AGENTS.md) | 面向 AI 助手 / 维护者的架构约定与历史踩坑记录 |
 
 ## License
 

@@ -40,7 +40,10 @@ int main(int argc, char** argv) {
     int   num_classes  = 1;   // pose usually has 1 class (person)
     int   num_keypoints = 17; // COCO keypoints
     std::string backend = "onnxruntime";
+    std::string ep      = "cpu";
     int   num_threads  = 4;
+    int   device_id    = 0;
+    bool  enable_fp16  = false;
 
     for (int i = 5; i < argc; i++) {
         std::string arg = argv[i];
@@ -50,6 +53,9 @@ int main(int argc, char** argv) {
         else if (arg.find("--classes=") == 0) num_classes   = std::stoi(arg.substr(10));
         else if (arg.find("--keypoints=") == 0) num_keypoints = std::stoi(arg.substr(12));
         else if (arg.find("--backend=") == 0) backend       = arg.substr(10);
+        else if (arg.find("--ep=") == 0)    ep             = arg.substr(5);
+        else if (arg.find("--device=") == 0) device_id    = std::stoi(arg.substr(9));
+        else if (arg.find("--fp16") == 0)    enable_fp16  = true;
         else if (arg.find("--threads=") == 0) num_threads   = std::stoi(arg.substr(10));
         else {
             std::cerr << "Unknown option: " << arg << std::endl;
@@ -93,6 +99,12 @@ int main(int argc, char** argv) {
     config.num_classes   = num_classes;
     config.num_keypoints = num_keypoints;
     config.num_threads   = num_threads;
+
+    // Backend-specific config via custom_config
+    config.custom_config = "ep=" + ep + ";--device=" + std::to_string(device_id);
+    if (enable_fp16) {
+        config.custom_config += ";--fp16";
+    }
 
     if (!model->load(config)) {
         std::cerr << "Failed to load model" << std::endl;

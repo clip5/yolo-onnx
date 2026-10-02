@@ -173,7 +173,7 @@ V8Decoder::decode_pose(const TensorSet& out, const DecodeContext& ctx) const {
         float max_cls = 0.0f;
         int max_cls_id = -1;
         for (int c = 0; c < num_classes; c++) {
-            const float cls = sigmoid(channel_at(data, cs, 4 + c, idx));
+            const float cls = maybe_sigmoid(channel_at(data, cs, 4 + c, idx));
             if (cls > max_cls) { max_cls = cls; max_cls_id = c; }
         }
         if (max_cls < score_thresh) return;
