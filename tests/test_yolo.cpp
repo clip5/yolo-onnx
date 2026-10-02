@@ -1,4 +1,5 @@
 #include "yolo_onnx/yolo_onnx.hpp"
+#include "process/postprocess/postprocess_core.hpp"
 #include <iostream>
 #include <cassert>
 #include <cmath>

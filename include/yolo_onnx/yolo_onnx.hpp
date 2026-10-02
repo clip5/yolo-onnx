@@ -38,11 +38,19 @@ class Backend;
 class PreProcess;
 class PostProcess;
 
+namespace detail { struct ModelImpl; }
+
 // ============================================================
 // YOLO Model Interface
 // ============================================================
-// 每个 YOLO 变体实现自己的 pre/post 处理逻辑。
-// 通过工厂函数 create_model() 创建实例。
+// 所有模型共用这一个类：模型格式与任务差异全部由内部 PostProcess + Decoder
+// 承担，通过 Config 表达。实现细节隐藏于 detail::ModelImpl（PIMPL），
+// 本类对外只暴露配置与推理入口。
+//
+// 典型用法：
+//   auto model = yolo_onnx::create_model(ModelType::YOLOv8, TaskType::Detect);
+//   model->load(cfg);
+//   InferResult r = model->infer(image);       // 或 model->infer_detect(image)
 // ============================================================
 
 class Model {
@@ -63,66 +71,42 @@ public:
         std::string custom_config;      // Backend-specific config (key=value;key=value...)
     };
 
-    virtual ~Model() = default;
+    explicit Model();
+    ~Model();
+
+    Model(Model&&) noexcept;             // 支持移动（unique_ptr 成员）
+    Model& operator=(Model&&) noexcept;
+    Model(const Model&)            = delete;   // 内部持有独占资源，不可拷贝
+    Model& operator=(const Model&) = delete;
 
     /// Load model and initialize backend
-    virtual bool load(const Config& config);
+    bool load(const Config& config);
 
-    /// Run inference on a single image. Returns the full task-specific result.
-    /// Use std::get_if<> / std::holds_alternative<> to extract the result:
-    ///   auto result = model->infer(image);
-    ///   if (auto* det = std::get_if<DetectResult>(&result)) { ... }   // boxes
-    ///   if (auto* seg = std::get_if<SegmentResult>(&result)) { ... } // boxes + masks
-    ///   if (auto* pose = std::get_if<PoseResult>(&result)) { ... }   // boxes + keypoints
-    ///   if (auto* obb = std::get_if<OBBResult>(&result)) { ... }     // obb_boxes
-    ///
-    /// 模型差异全部由 PostProcess + Decoder 承担，本类不再为每个模型派生子类。
-    virtual InferResult infer(const cv::Mat& image);
+    /// Run inference. Result type follows Config::task_type:
+    ///   if (auto* det = std::get_if<DetectResult>(&r))  { ... }  // boxes
+    ///   if (auto* seg = std::get_if<SegmentResult>(&r)) { ... }  // boxes + masks
+    ///   if (auto* pose = std::get_if<PoseResult>(&r))  { ... }  // boxes + keypoints
+    ///   if (auto* obb = std::get_if<OBBResult>(&r))    { ... }  // obb_boxes
+    InferResult infer(const cv::Mat& image);
 
-    /// 类型化便捷入口（供需要确定返回类型的调用方，如 Python 绑定）
+    /// 类型化入口（需要确定返回类型时使用，避免 std::variant 分支判断）
     DetectResult  infer_detect(const cv::Mat& image);
     SegmentResult infer_segment(const cv::Mat& image);
     PoseResult    infer_pose(const cv::Mat& image);
     OBBResult     infer_obb(const cv::Mat& image);
 
-    /// 由工厂设置模型类型与任务类型（在 load 之前调用）。
-    /// 模型不再按版本派生子类，类型信息全部承载在 config_ 中。
-    void set_model_task(ModelType type, TaskType task) {
-        config_.model_type = type;
-        config_.task_type  = task;
-    }
+    /// 由工厂设置模型类型与任务类型（load 之前调用）
+    void set_model_task(ModelType type, TaskType task);
 
-    /// Get config
-    const Config& config() const { return config_; }
+    /// 当前配置（load 后可能包含模型实际输入尺寸）
+    const Config& config() const;
 
-    /// Get backend
-    std::shared_ptr<Backend> backend() const { return backend_; }
+    /// 推理后端实例（未load 时为空）
+    std::shared_ptr<Backend> backend() const;
 
-protected:
-    Config                config_;
-    std::shared_ptr<Backend> backend_;
-    mutable std::shared_ptr<PreProcess>  preprocess_;
-    std::shared_ptr<PostProcess>         postprocess_;
-
-    /// 构造本模型的预处理参数（默认按 model_type 生成）
-    virtual PreProcessParams make_preprocess_params() const {
-        return PreProcessParams::for_model(config_.model_type,
-                                           config_.input_width, config_.input_height);
-    }
-
-    /// 构造本模型的后处理参数（默认取 config_ 的 score/nms 阈值）
-    virtual PostProcessParams make_postprocess_params() const {
-        PostProcessParams p;
-        p.score_thresh = config_.score_thresh;
-        p.nms_thresh   = config_.nms_thresh;
-        return p;
-    }
-
-    /// Letterbox resize + normalize（复用独立的 PreProcess 模块）
-    PreProcessResult preprocess(const cv::Mat& image, int target_w, int target_h) const;
-
-    /// 统一流程：预处理 → 前向 → PostProcess（解码+还原+NMS 全在后处理内完成）
-    InferResult run_pipeline(const cv::Mat& image);
+private:
+    Config                     config_;
+    std::unique_ptr<detail::ModelImpl> impl_;
 };
 
 // ============================================================

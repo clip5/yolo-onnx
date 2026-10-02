@@ -5,6 +5,7 @@ namespace yolo_onnx {
 
 PreProcessParams PreProcessParams::for_model(ModelType type, int width, int height) {
     PreProcessParams p;
+    p.model_type   = type;
     p.target_width  = width;
     p.target_height = height;
     p.swap_rb = true;

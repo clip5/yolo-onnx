@@ -219,6 +219,7 @@ inline cv::Mat make_nchw_blob(int batch, int channels, int height, int width) {
 // 预处理参数（描述一个模型对输入张量的要求）
 // ============================================================
 struct PreProcessParams {
+    ModelType model_type    = ModelType::YOLOv8;  // 记录来源，便于参数缓存失效判断
     int   target_width   = 640;
     int   target_height  = 640;
     bool  swap_rb        = true;    // BGR→RGB（PPYOLOE 等保持 BGR 时为 false）
@@ -232,12 +233,46 @@ struct PreProcessParams {
 };
 
 // ============================================================
+// NMS 策略
+// ============================================================
+// ClassAware：不同类别的框之间互不抑制（YOLOv5/v8/v11 等默认行为，
+//            类分数与框坐标一同按类别分组后各自做 NMS）
+// Agnostic ：所有类别的框一起做 NMS（早期 YOLOv3/v4 的做法，
+//            跨类重叠的框会互相抑制）
+enum class NmsMode {
+    ClassAware = 0,
+    Agnostic   = 1,
+};
+
+// ============================================================
 // 后处理参数
 // ============================================================
 struct PostProcessParams {
     float score_thresh   = 0.25f;  // 置信度下限
     float nms_thresh     = 0.45f;  // NMS IoU 阈值
     int   max_detections = 0;      // 最多保留目标数，0 表示不限制
+    NmsMode nms_mode     = NmsMode::ClassAware;  // NMS 是否按类别分组
+};
+
+// ============================================================
+// 解码上下文：Decoder 解码所需的模型配置（与具体输出格式无关的部分）
+// ============================================================
+struct DecodeContext {
+    int   num_classes   = 80;
+    int   num_keypoints = 17;  // pose 用
+    float score_thresh  = 0.25f;
+    int   input_width   = 640;
+    int   input_height  = 640;
+
+    /// 第 level 个特征层的步长（level 0/1/2 → stride 8/16/32）
+    int stride(int level) const { return 8 << level; }
+
+    /// 第 level 个特征层的网格宽/高/格点数。
+    /// 必须由实际输入尺寸推导：硬编码 80/40/20 与 6400/1600/400 会对
+    /// 非正方形输入（如 640x352）解出错误网格并读越界。
+    int grid_w(int level) const { return input_width  / stride(level); }
+    int grid_h(int level) const { return input_height / stride(level); }
+    int grid_count(int level) const { return grid_w(level) * grid_h(level); }
 };
 
 // ============================================================
@@ -279,14 +314,9 @@ inline float sigmoid(float x) {
     return 1.0f / (1.0f + std::exp(-x));
 }
 
-// IoU / NMS 实现在 src/process/postprocess/postprocess.cpp（模块内部使用，
-// 但属于对外工具 API，故在此声明）
-
-/// 两框 IoU
-float iou(const Box& a, const Box& b);
-
-/// CPU NMS（for regular boxes），返回保留框的索引
-std::vector<int> nms(const BoxArray& boxes, float iou_threshold);
+// 注：IoU / NMS / 坐标还原 / 过滤 / 一站式 pipeline 等后处理函数声明在
+//     src/process/postprocess/postprocess_core.hpp（不依赖 Model/Backend/Decoder，
+//     可整份拷到其他项目复用）。此处仅保留无需依赖后处理的纯类型与内联工具。
 
 /// Scale box from model output space back to original image
 inline void scale_box(Box& box, const LetterboxInfo& info) {

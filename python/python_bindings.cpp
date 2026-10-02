@@ -3,6 +3,7 @@
 #include <pybind11/numpy.h>
 
 #include "yolo_onnx/yolo_onnx.hpp"
+#include "process/postprocess/postprocess_core.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -259,7 +260,15 @@ PYBIND11_MODULE(yolo_onnx_py, m) {
     m.def("iou", &yo::iou, py::arg("a"), py::arg("b"),
           "Compute IoU between two boxes");
     m.def("nms", &yo::nms, py::arg("boxes"), py::arg("iou_threshold"),
-          "CPU Non-Maximum Suppression, returns indices of kept boxes");
+          py::arg("mode") = yo::NmsMode::ClassAware,
+          "CPU Non-Maximum Suppression, returns indices of kept boxes. "
+          "mode: ClassAware (different classes don't suppress each other) or Agnostic");
+    m.def("nms_class_aware", &yo::nms_class_aware, py::arg("boxes"), py::arg("iou_threshold"),
+          "Class-aware CPU NMS (different classes don't suppress each other)");
+    m.def("obb_iou", &yo::obb_iou, py::arg("a"), py::arg("b"),
+          "Compute IoU between two oriented boxes");
+    m.def("obb_nms", &yo::obb_nms, py::arg("boxes"), py::arg("iou_threshold"),
+          "CPU Non-Maximum Suppression for oriented boxes, returns kept indices");
     m.def("sigmoid", &yo::sigmoid, py::arg("x"),
           "Sigmoid function");
 

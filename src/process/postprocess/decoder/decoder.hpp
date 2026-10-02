@@ -26,25 +26,9 @@ namespace yolo_onnx {
 //
 // 注意：Decoder 与「任务」正交——按格式组织（V5Decoder/V8Decoder/...），
 //       由对应的 PostProcess 子类（Det/Segment/Pose/OBB）调用。
-
-/// 解码上下文：解码所需的模型配置（与具体格式无关的部分）
-struct DecodeContext {
-    int   num_classes   = 80;
-    int   num_keypoints = 17;  // pose 用
-    float score_thresh  = 0.25f;
-    int   input_width   = 640;
-    int   input_height  = 640;
-
-    /// 第 level 个特征层的步长（level 0/1/2 → stride 8/16/32）
-    int stride(int level) const { return 8 << level; }
-
-    /// 第 level 个特征层的网格宽/高/格点数。
-    /// 必须由实际输入尺寸推导：旧实现硬编码 80/40/20 与 6400/1600/400，
-    /// 对非正方形输入（如 640x352）会解出错误的网格而读越界。
-    int grid_w(int level) const { return input_width  / stride(level); }
-    int grid_h(int level) const { return input_height / stride(level); }
-    int grid_count(int level) const { return grid_w(level) * grid_h(level); }
-};
+//
+// DecodeContext（解码上下文）定义在公共 yolo_onnx_types.hpp，与 Decoder 解耦，
+// 使 postprocess/decoder 头文件可单独抽出复用而不牵动 Model。
 
 /// 解码器基类。子类覆写自己格式所需的 decode_* 方法，未用到的返回空。
 ///

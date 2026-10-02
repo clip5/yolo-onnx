@@ -8,13 +8,18 @@ find_package(pybind11 REQUIRED)
 set(PYTHON_BINDING_SOURCES
     ../src/core/onnxruntime_backend.cpp
     ../src/process/preprocess/preprocess.cpp
-    ../src/process/postprocess/postprocess.cpp
-    ../src/process/postprocess/decoder_v5.cpp
-    ../src/process/postprocess/decoder_yolox.cpp
-    ../src/process/postprocess/decoder_v8.cpp
-    ../src/process/postprocess/decoder_v8_tasks.cpp
-    ../src/process/postprocess/decoder_ppyoloe.cpp
-    ../src/process/postprocess/decoder_factory.cpp
+    ../src/process/postprocess/postprocess_core.cpp
+    ../src/process/postprocess/detect.cpp
+    ../src/process/postprocess/segment.cpp
+    ../src/process/postprocess/pose.cpp
+    ../src/process/postprocess/obb.cpp
+    ../src/process/postprocess/postprocess_factory.cpp
+    ../src/process/postprocess/decoder/decoder_v5.cpp
+    ../src/process/postprocess/decoder/decoder_yolox.cpp
+    ../src/process/postprocess/decoder/decoder_v8.cpp
+    ../src/process/postprocess/decoder/decoder_v8_tasks.cpp
+    ../src/process/postprocess/decoder/decoder_ppyoloe.cpp
+    ../src/process/postprocess/decoder/decoder_factory.cpp
     ../src/model.cpp
     python_bindings.cpp
 )
