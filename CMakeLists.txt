@@ -35,14 +35,13 @@ set(YOLO_ONNX_SOURCES
     src/core/onnxruntime_backend.cpp
     src/process/preprocess/preprocess.cpp
     src/process/postprocess/postprocess.cpp
+    src/process/postprocess/decoder_v5.cpp
+    src/process/postprocess/decoder_yolox.cpp
+    src/process/postprocess/decoder_v8.cpp
+    src/process/postprocess/decoder_v8_tasks.cpp
+    src/process/postprocess/decoder_ppyoloe.cpp
+    src/process/postprocess/decoder_factory.cpp
     src/model.cpp
-    src/models/detect/v5.cpp
-    src/models/detect/yolox.cpp
-    src/models/detect/v8.cpp
-    src/models/detect/ppyoloe.cpp
-    src/models/segment/v8.cpp
-    src/models/pose/v8.cpp
-    src/models/obb/v8.cpp
 )
 
 # ---- Library ----

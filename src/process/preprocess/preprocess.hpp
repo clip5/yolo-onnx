@@ -20,12 +20,19 @@ public:
     virtual ~PreProcess() = default;
 
     /// Letterbox + normalize + 打包为 NCHW float blob
+    /// @return blob 为 NCHW cv::Mat（dims=4, size={1,3,H,W}，连续），可直接交推理后端；
+    ///         letterbox 携带坐标还原所需的 scale/padding 信息。
+    /// @note  返回的 blob 独立持有内存（不复用内部缓冲），可安全跨多次调用持有。
     virtual PreProcessResult run(const cv::Mat& image) const;
 
     const PreProcessParams& params() const { return params_; }
 
 protected:
     PreProcessParams params_;
+
+    /// 中间缓冲复用：letterbox 画布与通道分离结果不逃逸出本次调用，可安全复用
+    mutable cv::Mat           canvas_;
+    mutable std::vector<cv::Mat> channels_;
 };
 
 } // namespace yolo_onnx

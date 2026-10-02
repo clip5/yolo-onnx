@@ -1,13 +1,7 @@
 #include "yolo_onnx/yolo_onnx.hpp"
 #include "core/onnxruntime_backend.hpp"
 #include "process/preprocess/preprocess.hpp"
-#include "models/detect/v5.hpp"
-#include "models/detect/yolox.hpp"
-#include "models/detect/v8.hpp"
-#include "models/detect/ppyoloe.hpp"
-#include "models/segment/v8.hpp"
-#include "models/pose/v8.hpp"
-#include "models/obb/v8.hpp"
+#include "process/postprocess/postprocess.hpp"
 #include <opencv2/imgproc.hpp>
 #include <iostream>
 
@@ -88,41 +82,105 @@ PreProcessResult Model::preprocess(const cv::Mat& image, int target_w, int targe
 }
 
 // ============================================================
-// Model Factory (detection — backwards compatible)
+// 统一推理流程
+// ============================================================
+// 预处理 → 前向 → PostProcess（解码 + 坐标还原 + 过滤 + NMS 全在后处理内完成）。
+// 模型/任务差异全部由 create_postprocess() 装配的 Decoder + PostProcess 承担，
+// 本文件不含任何与具体模型格式相关的解码代码。
+InferResult Model::run_pipeline(const cv::Mat& image) {
+    // 1. Preprocess
+    auto pre = preprocess(image, config_.input_width, config_.input_height);
+
+    // 2. Assemble postprocess（懒初始化，跟随最新的 config_ / task_type）
+    if (!postprocess_) {
+        postprocess_ = create_postprocess(config_.task_type, config_.model_type,
+                                          make_postprocess_params());
+        if (!postprocess_) return InferResult{};
+    }
+
+    // 解码上下文随config_ 派生（网格尺寸必须用实际输入宽高）
+    DecodeContext ctx;
+    ctx.num_classes   = config_.num_classes;
+    ctx.num_keypoints = config_.num_keypoints;
+    ctx.score_thresh  = config_.score_thresh;
+    ctx.input_width   = config_.input_width;
+    ctx.input_height  = config_.input_height;
+    postprocess_->set_context(ctx);
+
+    // 3. Forward
+    auto input_names = backend_->get_input_names();
+    std::vector<std::vector<int64_t>> input_shapes = {pre.shape()};
+    std::vector<cv::Mat> input_data = {pre.blob};
+
+    auto output_names = backend_->get_output_names();
+    TensorSet outputs;
+
+    if (!backend_->forward(input_names, input_shapes, input_data,
+                           output_names, outputs)) {
+        std::cerr << "[" << model_type_name(config_.model_type)
+                  << "] Inference failed" << std::endl;
+        return InferResult{};
+    }
+
+    // 4. PostProcess: decode → restore → filter → NMS
+    return postprocess_->forward(outputs, pre.letterbox);
+}
+
+InferResult Model::infer(const cv::Mat& image) {
+    return run_pipeline(image);
+}
+
+DetectResult Model::infer_detect(const cv::Mat& image) {
+    auto r = run_pipeline(image);
+    if (auto* d = std::get_if<DetectResult>(&r)) return *d;
+    return DetectResult{};
+}
+
+SegmentResult Model::infer_segment(const cv::Mat& image) {
+    auto r = run_pipeline(image);
+    if (auto* s = std::get_if<SegmentResult>(&r)) return *s;
+    return SegmentResult{};
+}
+
+PoseResult Model::infer_pose(const cv::Mat& image) {
+    auto r = run_pipeline(image);
+    if (auto* p = std::get_if<PoseResult>(&r)) return *p;
+    return PoseResult{};
+}
+
+OBBResult Model::infer_obb(const cv::Mat& image) {
+    auto r = run_pipeline(image);
+    if (auto* o = std::get_if<OBBResult>(&r)) return *o;
+    return OBBResult{};
+}
+
+// ============================================================
+// Model Factory
 // ============================================================
 std::shared_ptr<Model> create_model(ModelType type) {
     return create_model(type, TaskType::Detect);
 }
 
-// ============================================================
-// Model Factory (task-aware)
-// ============================================================
 std::shared_ptr<Model> create_model(ModelType type, TaskType task) {
-    // For non-YOLOv8 model types, only detection is supported
-    if (type != ModelType::YOLOv8 && type != ModelType::YOLOv11 && type != ModelType::YOLO26) {
-        if (task != TaskType::Detect) {
-            std::cerr << "[create_model] Task '" << task_type_name(task)
-                      << "' only supported for YOLOv8 family" << std::endl;
-            return nullptr;
-        }
-        switch (type) {
-            case ModelType::YOLOv5:   return std::make_shared<ModelV5>();
-            case ModelType::YOLOX:    return std::make_shared<ModelYOLOX>();
-            case ModelType::PPYOLOE:  return std::make_shared<ModelPPYOLOE>();
-            default: break;
-        }
+    // 只有 v8 系支持 segment / pose / obb，其余模型仅支持检测
+    const bool v8_family = (type == ModelType::YOLOv8 ||
+                            type == ModelType::YOLOv11 ||
+                            type == ModelType::YOLO26);
+    if (!v8_family && task != TaskType::Detect) {
+        std::cerr << "[create_model] Task '" << task_type_name(task)
+                  << "' only supported for YOLOv8 family" << std::endl;
+        return nullptr;
+    }
+    if (!create_decoder(type)) {
+        std::cerr << "[create_model] Unsupported model type: "
+                  << model_type_name(type) << std::endl;
+        return nullptr;
     }
 
-    // YOLOv8 family with task dispatch
-    switch (task) {
-        case TaskType::Detect:  return std::make_shared<ModelV8>();
-        case TaskType::Segment: return std::make_shared<ModelV8Segment>();
-        case TaskType::Pose:    return std::make_shared<ModelV8Pose>();
-        case TaskType::OBB:     return std::make_shared<ModelV8OBB>();
-        default:
-            std::cerr << "[create_model] Unknown task type" << std::endl;
-            return nullptr;
-    }
+    // 模型不再派生子类：全部差异由 config_（model_type / task_type / 阈值）表达
+    auto model = std::make_shared<Model>();
+    model->set_model_task(type, task);
+    return model;
 }
 
 } // namespace yolo_onnx

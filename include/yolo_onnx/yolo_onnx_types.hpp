@@ -186,10 +186,34 @@ struct LetterboxInfo {
 // ============================================================
 // Pre-processing result
 // ============================================================
+// blob 以 cv::Mat 承载 NCHW float32 张量（dims=4, size={1,3,H,W}），
+// 这样形状信息自描述、无需额外传 shape，且内存连续可直接交给推理后端。
+// 注意：NCHW 是 4 维数据，cv::Mat 的原生维度只能表达 HWC 交织，
+// 这里通过显式 steps 强制为平面序（见 make_nchw_blob）。
 struct PreProcessResult {
-    std::vector<float> blob;         // NCHW float blob
-    LetterboxInfo      letterbox;    // letterbox info for coordinate mapping
+    cv::Mat       blob;       // NCHW float32: dims=4, size={1,3,target_h,target_w}, 连续
+    LetterboxInfo letterbox;  // letterbox info for coordinate mapping
+
+    /// NCHW 形状 {1, 3, H, W}，供推理后端直接使用
+    std::vector<int64_t> shape() const {
+        if (blob.empty()) return {};
+        return {1, blob.size[1], blob.size[2], blob.size[3]};
+    }
+
+    /// 连续 float 裸指针（NCHW），供需要裸缓冲的后端使用
+    const float* data() const { return blob.empty() ? nullptr : blob.ptr<float>(); }
+
+    size_t total_bytes() const { return blob.empty() ? 0 : blob.total() * blob.elemSize(); }
 };
+
+/// 分配一个 NCHW 连续 float32 Mat（持有内存）。
+/// cv::Mat 的原生维度只能表达 HWC 交织，但当 4 维 Mat 自行分配连续内存时，
+/// 其 steps 恰好就是 NCHW 平面序（step[1]=H*W*4, step[2]=W*4, step[3]=4），
+/// 因此无需手动指定 steps。
+inline cv::Mat make_nchw_blob(int batch, int channels, int height, int width) {
+    int sizes[4] = {batch, channels, height, width};
+    return cv::Mat(4, sizes, CV_32F);
+}
 
 // ============================================================
 // 预处理参数（描述一个模型对输入张量的要求）
@@ -205,6 +229,47 @@ struct PreProcessParams {
 
     /// 按模型类型给出默认参数（实现在 src/process/preprocess/preprocess.cpp）
     static PreProcessParams for_model(ModelType type, int width, int height);
+};
+
+// ============================================================
+// 后处理参数
+// ============================================================
+struct PostProcessParams {
+    float score_thresh   = 0.25f;  // 置信度下限
+    float nms_thresh     = 0.45f;  // NMS IoU 阈值
+    int   max_detections = 0;      // 最多保留目标数，0 表示不限制
+};
+
+// ============================================================
+// TensorSet — 推理后端的一组输出张量
+// ============================================================
+// 每个 datas[i] 是一个连续的 1-D float32 Mat（元素总数 = shapes[i] 各维乘积），
+// 形状自描述地保存在 shapes[i] 中。相比裸 vector<vector<float>>，用 Mat 承载
+// 便于与预处理产出的 blob 保持同一种类型，也便于后续替换/扩展张量类型。
+struct TensorSet {
+    std::vector<cv::Mat>              datas;    // 连续 float32 数据
+    std::vector<std::vector<int64_t>> shapes;   // 与 datas 一一对应的形状
+
+    size_t size() const { return datas.size(); }
+    bool   empty() const { return datas.empty(); }
+
+    /// 第 i 个张量的元素总数（未越界时为 0）
+    size_t count(size_t i) const {
+        if (i >= datas.size()) return 0;
+        return datas[i].total() * datas[i].channels();
+    }
+
+    /// 第 i 个张量的形状，缺省为空 vector
+    const std::vector<int64_t>& shape(size_t i) const {
+        static const std::vector<int64_t> kEmpty;
+        return i < shapes.size() ? shapes[i] : kEmpty;
+    }
+
+    /// 第 i 个张量的裸数据指针（未越界时为 nullptr）
+    const float* data(size_t i) const {
+        if (i >= datas.size() || datas[i].empty()) return nullptr;
+        return datas[i].ptr<float>();
+    }
 };
 
 // ============================================================

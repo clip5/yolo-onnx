@@ -3,9 +3,6 @@
 #include <pybind11/numpy.h>
 
 #include "yolo_onnx/yolo_onnx.hpp"
-#include "models/segment/v8.hpp"
-#include "models/pose/v8.hpp"
-#include "models/obb/v8.hpp"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -190,63 +187,56 @@ PYBIND11_MODULE(yolo_onnx_py, m) {
         });
 
     // ---- Model base class ----
+    // 模型不再按版本派生子类：detect/segment/pose/obb 全部由同一个 Model 承担，
+    // 任务差异由 config_.task_type 决定，入口按返回类型区分。
     py::class_<yo::Model, std::shared_ptr<yo::Model>>(m, "Model")
+        .def(py::init<>())
         .def("load", &yo::Model::load, py::arg("config"))
         .def("config", &yo::Model::config, py::return_value_policy::reference_internal)
         .def("backend", &yo::Model::backend)
         .def("infer", [](yo::Model& self, py::array_t<uint8_t, py::array::c_style | py::array::forcecast> img) {
             cv::Mat mat = numpy_to_cvmat(img);
             return self.infer(mat);
-        }, py::arg("image"), "Run detection inference on a numpy image (H, W, 3) uint8 BGR")
+        }, py::arg("image"), "Run inference on a numpy image (H, W, 3) uint8 BGR; "
+                             "result type follows config.task_type")
         .def("infer_file", [](yo::Model& self, const std::string& path) {
             cv::Mat mat = cv::imread(path);
             if (mat.empty()) {
                 throw std::runtime_error("Failed to load image: " + path);
             }
             return self.infer(mat);
-        }, py::arg("path"), "Run detection inference on an image file");
-
-    // ---- ModelV8Segment (segment) ----
-    py::class_<yo::ModelV8Segment, yo::Model, std::shared_ptr<yo::ModelV8Segment>>(m, "ModelV8Segment")
-        .def(py::init<>())
-        .def("infer_segment", [](yo::ModelV8Segment& self,
+        }, py::arg("path"), "Run inference on an image file")
+        .def("infer_detect", [](yo::Model& self,
+                                py::array_t<uint8_t, py::array::c_style | py::array::forcecast> img) {
+            return self.infer_detect(numpy_to_cvmat(img));
+        }, py::arg("image"), "Run detection inference, returns DetectResult")
+        .def("infer_segment", [](yo::Model& self,
                                  py::array_t<uint8_t, py::array::c_style | py::array::forcecast> img) {
-            cv::Mat mat = numpy_to_cvmat(img);
-            return self.infer_segment(mat);
-        }, py::arg("image"), "Run segment inference on a numpy image (H, W, 3) uint8 BGR")
-        .def("infer_segment_file", [](yo::ModelV8Segment& self, const std::string& path) {
+            return self.infer_segment(numpy_to_cvmat(img));
+        }, py::arg("image"), "Run segmentation inference, returns SegmentResult")
+        .def("infer_segment_file", [](yo::Model& self, const std::string& path) {
             cv::Mat mat = cv::imread(path);
             if (mat.empty()) {
                 throw std::runtime_error("Failed to load image: " + path);
             }
             return self.infer_segment(mat);
-        }, py::arg("path"), "Run segment inference on an image file");
-
-    // ---- ModelV8Pose (pose) ----
-    py::class_<yo::ModelV8Pose, yo::Model, std::shared_ptr<yo::ModelV8Pose>>(m, "ModelV8Pose")
-        .def(py::init<>())
-        .def("infer_pose", [](yo::ModelV8Pose& self,
-                              py::array_t<uint8_t, py::array::c_style | py::array::forcecast> img) {
-            cv::Mat mat = numpy_to_cvmat(img);
-            return self.infer_pose(mat);
-        }, py::arg("image"), "Run pose inference on a numpy image (H, W, 3) uint8 BGR")
-        .def("infer_pose_file", [](yo::ModelV8Pose& self, const std::string& path) {
-            cv::Mat mat = cv::imread(path);
-            if (mat.empty()) {
-                throw std::runtime_error("Failed to load image: " + path);
-            }
-            return self.infer_pose(mat);
-        }, py::arg("path"), "Run pose inference on an image file");
-
-    // ---- ModelV8OBB (obb) ----
-    py::class_<yo::ModelV8OBB, yo::Model, std::shared_ptr<yo::ModelV8OBB>>(m, "ModelV8OBB")
-        .def(py::init<>())
-        .def("infer_obb", [](yo::ModelV8OBB& self,
+        }, py::arg("path"), "Run segmentation inference on an image file")
+        .def("infer_pose", [](yo::Model& self,
                              py::array_t<uint8_t, py::array::c_style | py::array::forcecast> img) {
-            cv::Mat mat = numpy_to_cvmat(img);
-            return self.infer_obb(mat);
-        }, py::arg("image"), "Run OBB inference on a numpy image (H, W, 3) uint8 BGR")
-        .def("infer_obb_file", [](yo::ModelV8OBB& self, const std::string& path) {
+            return self.infer_pose(numpy_to_cvmat(img));
+        }, py::arg("image"), "Run pose inference, returns PoseResult")
+        .def("infer_pose_file", [](yo::Model& self, const std::string& path) {
+            cv::Mat mat = cv::imread(path);
+            if (mat.empty()) {
+                throw std::runtime_error("Failed to load image: " + path);
+            }
+            return self.infer_pose(mat);
+        }, py::arg("path"), "Run pose inference on an image file")
+        .def("infer_obb", [](yo::Model& self,
+                            py::array_t<uint8_t, py::array::c_style | py::array::forcecast> img) {
+            return self.infer_obb(numpy_to_cvmat(img));
+        }, py::arg("image"), "Run OBB inference, returns OBBResult")
+        .def("infer_obb_file", [](yo::Model& self, const std::string& path) {
             cv::Mat mat = cv::imread(path);
             if (mat.empty()) {
                 throw std::runtime_error("Failed to load image: " + path);

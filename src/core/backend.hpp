@@ -1,7 +1,10 @@
 #pragma once
+#include "yolo_onnx/yolo_onnx_types.hpp"
+
 #include <string>
 #include <vector>
 #include <memory>
+#include <opencv2/core.hpp>
 
 namespace yolo_onnx {
 
@@ -33,17 +36,15 @@ public:
     /// Run inference
     /// @param input_names   input tensor names
     /// @param input_shapes  input tensor shapes (NCHW format)
-    /// @param input_data    input tensor data (float32, contiguous)
+    /// @param input_data    input tensor data (float32, contiguous) — one cv::Mat per input
     /// @param output_names  output tensor names
-    /// @param output_shapes [out] output tensor shapes
-    /// @param output_data   [out] output tensor data (float32, contiguous)
+    /// @param outputs       [out] 输出张量集合（连续 float32 Mat + 各自形状）
     virtual bool forward(
         const std::vector<std::string>&    input_names,
         const std::vector<std::vector<int64_t>>& input_shapes,
-        const std::vector<float>&          input_data,
+        const std::vector<cv::Mat>&       input_data,
         const std::vector<std::string>&    output_names,
-        std::vector<std::vector<int64_t>>& output_shapes,
-        std::vector<std::vector<float>>&   output_data
+        TensorSet&                         outputs
     ) = 0;
 
     /// Get input tensor info

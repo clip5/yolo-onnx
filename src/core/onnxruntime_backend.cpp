@@ -141,10 +141,9 @@ bool OnnxruntimeBackend::load(const Config& config) {
 bool OnnxruntimeBackend::forward(
     const std::vector<std::string>&          input_names,
     const std::vector<std::vector<int64_t>>& input_shapes,
-    const std::vector<float>&                input_data,
+    const std::vector<cv::Mat>&             input_data,
     const std::vector<std::string>&          output_names,
-    std::vector<std::vector<int64_t>>&       output_shapes,
-    std::vector<std::vector<float>>&         output_data
+    TensorSet&                               outputs
 ) {
     if (!loaded_) {
         std::cerr << "[OnnxruntimeBackend] Model not loaded" << std::endl;
@@ -155,27 +154,27 @@ bool OnnxruntimeBackend::forward(
         // Prepare input tensors
         std::vector<Ort::Value> input_tensors;
         std::vector<const char*> input_names_cstr;
-        size_t data_offset = 0;
 
         for (size_t i = 0; i < input_names.size(); i++) {
             input_names_cstr.push_back(input_names[i].c_str());
 
-            // Calculate total elements
-            int64_t total_elements = 1;
-            for (auto dim : input_shapes[i]) {
-                total_elements *= dim;
+            if (i >= input_data.size() || input_data[i].empty()) {
+                std::cerr << "[OnnxruntimeBackend] Missing input tensor data at index "
+                          << i << std::endl;
+                return false;
             }
 
-            // Create tensor from existing data
+            // 每个输入对应一个连续 float32 的 Mat（PreProcess 产出NCHW cv::Mat）
+            const cv::Mat& m = input_data[i];
+            size_t total_elements = static_cast<size_t>(m.total() * m.channels());
+
             input_tensors.push_back(Ort::Value::CreateTensor<float>(
                 memory_info_,
-                const_cast<float*>(input_data.data() + data_offset),
+                const_cast<float*>(m.ptr<float>()),
                 total_elements,
                 input_shapes[i].data(),
                 input_shapes[i].size()
             ));
-
-            data_offset += total_elements;
         }
 
         // Prepare output names
@@ -191,27 +190,27 @@ bool OnnxruntimeBackend::forward(
             output_names_cstr.data(), output_names.size()
         );
 
-        // Copy output data
-        output_data.resize(ort_outputs.size());
-        output_shapes.resize(ort_outputs.size());
+        // 拷贝输出到 TensorSet（每个输出一个连续 float32 Mat + 形状）
+        outputs.datas.clear();
+        outputs.shapes.clear();
+        outputs.datas.resize(ort_outputs.size());
+        outputs.shapes.resize(ort_outputs.size());
 
         for (size_t i = 0; i < ort_outputs.size(); i++) {
             auto tensor_info = ort_outputs[i].GetTensorTypeAndShapeInfo();
-            output_shapes[i] = tensor_info.GetShape();
+            outputs.shapes[i] = tensor_info.GetShape();
 
-            size_t total_elements = tensor_info.GetElementCount();
-            output_data[i].resize(total_elements);
-
-            // Get element type and copy accordingly
-            auto element_type = tensor_info.GetElementType();
-            if (element_type == ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-                const float* data = ort_outputs[i].GetTensorData<float>();
-                std::memcpy(output_data[i].data(), data, total_elements * sizeof(float));
-            } else {
-                std::cerr << "[OnnxruntimeBackend] Unsupported output type: " 
-                          << element_type << std::endl;
+            if (tensor_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+                std::cerr << "[OnnxruntimeBackend] Unsupported output type: "
+                          << tensor_info.GetElementType() << std::endl;
                 return false;
             }
+
+            size_t total_elements = tensor_info.GetElementCount();
+            outputs.datas[i] = cv::Mat(1, (int)total_elements, CV_32F);
+            std::memcpy(outputs.datas[i].ptr<float>(),
+                        ort_outputs[i].GetTensorData<float>(),
+                        total_elements * sizeof(float));
         }
 
         return true;

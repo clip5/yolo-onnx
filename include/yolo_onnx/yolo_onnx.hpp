@@ -30,12 +30,13 @@ namespace yolo_onnx {
 // ============================================================
 // Inference Backend Interface (前置声明)
 // ============================================================
-// Backend / PreProcess 是内部实现细节，对外接口只需前置声明。
-// 完整定义在 src/core/backend.hpp、src/process/preprocess/preprocess.hpp 中，
-// 用户无需包含。
+// Backend / PreProcess / PostProcess 是内部实现细节，对外接口只需前置声明。
+// 完整定义在 src/core/backend.hpp、src/process/preprocess/preprocess.hpp、
+// src/process/postprocess/postprocess.hpp 中，用户无需包含。
 // ============================================================
 class Backend;
 class PreProcess;
+class PostProcess;
 
 // ============================================================
 // YOLO Model Interface
@@ -74,7 +75,22 @@ public:
     ///   if (auto* seg = std::get_if<SegmentResult>(&result)) { ... } // boxes + masks
     ///   if (auto* pose = std::get_if<PoseResult>(&result)) { ... }   // boxes + keypoints
     ///   if (auto* obb = std::get_if<OBBResult>(&result)) { ... }     // obb_boxes
-    virtual InferResult infer(const cv::Mat& image) = 0;
+    ///
+    /// 模型差异全部由 PostProcess + Decoder 承担，本类不再为每个模型派生子类。
+    virtual InferResult infer(const cv::Mat& image);
+
+    /// 类型化便捷入口（供需要确定返回类型的调用方，如 Python 绑定）
+    DetectResult  infer_detect(const cv::Mat& image);
+    SegmentResult infer_segment(const cv::Mat& image);
+    PoseResult    infer_pose(const cv::Mat& image);
+    OBBResult     infer_obb(const cv::Mat& image);
+
+    /// 由工厂设置模型类型与任务类型（在 load 之前调用）。
+    /// 模型不再按版本派生子类，类型信息全部承载在 config_ 中。
+    void set_model_task(ModelType type, TaskType task) {
+        config_.model_type = type;
+        config_.task_type  = task;
+    }
 
     /// Get config
     const Config& config() const { return config_; }
@@ -85,22 +101,28 @@ public:
 protected:
     Config                config_;
     std::shared_ptr<Backend> backend_;
-    mutable std::shared_ptr<PreProcess> preprocess_;
+    mutable std::shared_ptr<PreProcess>  preprocess_;
+    std::shared_ptr<PostProcess>         postprocess_;
 
-    /// 构造本模型的预处理参数（默认按 model_type 生成；YOLOX 等覆盖以定制 mean/std）
+    /// 构造本模型的预处理参数（默认按 model_type 生成）
     virtual PreProcessParams make_preprocess_params() const {
         return PreProcessParams::for_model(config_.model_type,
                                            config_.input_width, config_.input_height);
     }
 
+    /// 构造本模型的后处理参数（默认取 config_ 的 score/nms 阈值）
+    virtual PostProcessParams make_postprocess_params() const {
+        PostProcessParams p;
+        p.score_thresh = config_.score_thresh;
+        p.nms_thresh   = config_.nms_thresh;
+        return p;
+    }
+
     /// Letterbox resize + normalize（复用独立的 PreProcess 模块）
     PreProcessResult preprocess(const cv::Mat& image, int target_w, int target_h) const;
 
-    /// Decode model output into candidate boxes (model-specific)
-    virtual BoxArray decode_output(
-        const std::vector<std::vector<float>>&   output_data,
-        const std::vector<std::vector<int64_t>>& output_shapes
-    ) const = 0;
+    /// 统一流程：预处理 → 前向 → PostProcess（解码+还原+NMS 全在后处理内完成）
+    InferResult run_pipeline(const cv::Mat& image);
 };
 
 // ============================================================
