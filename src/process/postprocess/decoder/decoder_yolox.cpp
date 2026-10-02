@@ -10,8 +10,14 @@ namespace yolo_onnx {
 // ============================================================
 // 导出格式 A: 单个输出 [1, num_grids, 5+C]（box-major，按 stride 8/16/32 顺序拼接）
 // 导出格式 B: 3 个输出 [1, 5+C, H, W]
-// 官方解码公式：center = (sigmoid(t)*2 - 0.5 + grid) * stride
-//                size   = (sigmoid(t)*2)^2 * stride
+//
+// 官方解码公式（作用于前 4 个 box 通道，它们是原始 logit）：
+//   center = (sigmoid(t)*2 - 0.5 + grid) * stride
+//   size   = (sigmoid(t)*2)^2 * stride
+//
+// 注意：第 5 列起（obj + 各类分数）在导出的 ONNX 里**已经过 sigmoid**，
+// 值域恒为 [0,1]。这里不能再补一次 sigmoid——那会把所有低分项都抬到 0.5
+// 以上，导致几乎所有格子都越过阈值（历史实现正是如此，8400 个格子全部通过）。
 BoxArray YOLOXDecoder::decode_detect(const TensorSet& out, const DecodeContext& ctx) const {
     BoxArray boxes;
     if (out.empty()) return boxes;
@@ -52,11 +58,11 @@ BoxArray YOLOXDecoder::decode_detect(const TensorSet& out, const DecodeContext& 
                 const int gj = g / grid_w;
                 const float* row = data + (size_t)idx * channels;
 
-                const float obj_conf = sigmoid(row[4]);
+                const float obj_conf = row[4];
                 float max_cls = 0.0f;
                 int max_cls_id = -1;
                 for (int c = 0; c < num_classes; c++) {
-                    const float cls = sigmoid(row[5 + c]);
+                    const float cls = row[5 + c];
                     if (cls > max_cls) { max_cls = cls; max_cls_id = c; }
                 }
 
@@ -92,11 +98,11 @@ BoxArray YOLOXDecoder::decode_detect(const TensorSet& out, const DecodeContext& 
 
         for (int h = 0; h < height; h++) {
             for (int w = 0; w < width; w++) {
-                const float obj = sigmoid(data[4 + h * width + w]);
+                const float obj = data[4 + h * width + w];
                 float max_cls = 0.0f;
                 int max_cls_id = -1;
                 for (int c = 0; c < num_classes; c++) {
-                    const float cls = sigmoid(data[5 + c + h * width + w]);
+                    const float cls = data[5 + c + h * width + w];
                     if (cls > max_cls) { max_cls = cls; max_cls_id = c; }
                 }
                 const float score = obj * max_cls;

@@ -15,6 +15,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 option(WITH_EXAMPLES "Build examples" ON)
 option(WITH_TESTS    "Build tests"    OFF)
 option(WITH_PYTHON   "Build python bindings" OFF)
+option(WITH_TOOLS    "Build tools (debug/compare utilities)" OFF)
 
 # ---- Dependencies ----
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs highgui)
@@ -78,6 +79,13 @@ install(DIRECTORY include/yolo_onnx
 )
 
 # ---- Subdirectories ----
+# enable_testing() 必须在 add_subdirectory(tests) 之前调用，
+# 否则 tests/CMakeLists.txt 里的 add_test() 不会被 CTest 注册，
+# ctest 会报 "No tests were found!!!"（直接跑 build/tests/test_yolo 仍可用）。
+if(WITH_TESTS)
+    enable_testing()
+endif()
+
 if(WITH_EXAMPLES)
     add_subdirectory(examples)
 endif()
@@ -88,4 +96,8 @@ endif()
 
 if(WITH_PYTHON)
     add_subdirectory(python)
+endif()
+
+if(WITH_TOOLS)
+    add_subdirectory(tools)
 endif()

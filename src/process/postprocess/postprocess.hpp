@@ -74,7 +74,7 @@ private:
                                            const std::vector<std::array<float, 32>>& coeffs,
                                            const LetterboxInfo& lb,
                                            const std::vector<Box>& boxes,
-                                           int input_width);
+                                           int input_width, int input_height);
 };
 
 /// 姿态：候选框 + 关键点 → NMS（框与关键点同步还原）

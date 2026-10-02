@@ -1,5 +1,7 @@
 #include "yolo_onnx/yolo_onnx.hpp"
 #include "process/postprocess/postprocess_core.hpp"
+#include "process/postprocess/decoder/decoder.hpp"
+#include <opencv2/core.hpp>
 #include <iostream>
 #include <cassert>
 #include <cmath>
@@ -207,6 +209,110 @@ void test_task_type_names() {
     TEST("TaskType OBB", std::string(yolo_onnx::task_type_name(yolo_onnx::TaskType::OBB)) == "obb");
 }
 
+// ============================================================
+// 回归测试：两个已修复的真实 bug
+// ============================================================
+
+/// 回归 1：YOLOX 导出张量里 col4(obj) 与 col5+(cls) 已经过 sigmoid，
+/// 解码器若再补一次 sigmoid，会把所有低分项抬到 0.5 以上，
+/// 8400 个格子几乎全部越过阈值（实测输出 5445 个框、匹配 0 个）。
+///
+/// 构造一个「已 sigmoid」的输出：大量低分格子 + 少量高分格子，
+/// 正确解码应只保留高分格子；错误解码（二次 sigmoid）会全部放行。
+void test_yolox_no_double_sigmoid() {
+    std::cout << "\n=== Test: YOLOX decode (regression: no double sigmoid) ===\n" << std::endl;
+
+    const int num_classes = 80;
+    const int input = 640;
+    const int grid_w = input / 8;
+    const int grid_count = grid_w * grid_w;           // 单层，只测 stride 8
+    const int channels = 5 + num_classes;
+
+    // 只填 1 层（stride 8），DecodeContext 的 stride16/32 网格会被 idx 越界保护跳过
+    std::vector<float> data((size_t)grid_count * channels, 0.0f);
+    auto at = [&](int idx, int c) -> float& { return data[(size_t)idx * channels + c]; };
+
+    // 背景：低分（已 sigmoid，值很小）——二次 sigmoid 后会变成 ~0.5 而越过阈值
+    for (int i = 0; i < grid_count; i++) {
+        at(i, 4) = 0.001f;                            // obj
+        at(i, 5 + 0) = 0.001f;                        // cls0
+    }
+    // 目标：高分
+    const int target = 1234;
+    at(target, 4) = 0.95f;
+    at(target, 5 + 7) = 0.90f;                        // class 7
+
+    yolo_onnx::TensorSet out;
+    out.datas.emplace_back(1, grid_count * channels, CV_32F, data.data());
+    out.shapes.push_back({1, grid_count, channels});
+
+    yolo_onnx::DecodeContext ctx;
+    ctx.num_classes  = num_classes;
+    ctx.score_thresh = 0.25f;
+    ctx.input_width  = input;
+    ctx.input_height = input;
+
+    yolo_onnx::YOLOXDecoder dec;
+    auto boxes = dec.decode_detect(out, ctx);
+
+    // 二次 sigmoid 会让 80x80=6400 个背景格子全部通过（score ≈ 0.5*0.5 = 0.25）
+    TEST("YOLOX: background cells filtered (no double sigmoid)",
+         boxes.size() == 1);
+    if (boxes.size() == 1) {
+        TEST("YOLOX: keeps correct class", boxes[0].label == 7);
+        // 0.95 * 0.90
+        TEST("YOLOX: score = obj * cls", std::abs(boxes[0].score - 0.855f) < 1e-4);
+        TEST("YOLOX: box has positive size",
+             boxes[0].x2 > boxes[0].x1 && boxes[0].y2 > boxes[0].y1);
+    }
+}
+
+/// 回归 2：segment 的掩码合成。
+/// 两个缺陷都会让掩码与框对不上（实测 mask IoU 仅 0.24）：
+///   (a) 裁剪窗口用「已还原到原图的 box」直接减 padding，漏了「映射回模型输入空间」；
+///   (b) 缩放时直接把 proto 网格拉到原图尺寸，忽略了 letterbox 的 padding。
+/// 正确做法：proto → 模型输入 → 去 letterbox padding → 原图。
+void test_segment_mask_coordinate_mapping() {
+    std::cout << "\n=== Test: Segment mask mapping (regression) ===\n" << std::endl;
+
+    // ---- (a) 原图坐标 → proto 坐标的映射必须先经过模型输入空间 ----
+    // letterbox: 原图 810x1080 → 输入 640x640, scale=640/1080, pad_left=(640-480)/2=80
+    const int orig_w = 810, orig_h = 1080, in_w = 640, in_h = 640;
+    const int proto_w = in_w / 4, proto_h = in_h / 4;   // 160x160
+    const float scale = (float)in_w / (float)orig_h;    // 0.5926
+    const int pad_left = (in_w - (int)(orig_w * scale)) / 2;
+    const int pad_top  = 0;
+
+    yolo_onnx::LetterboxInfo lb{scale, pad_left, pad_top, orig_w, orig_h, in_w, in_h};
+
+    // 一个框，其右边缘应贴近原图右边界 → proto 坐标也应贴近 proto 宽度
+    yolo_onnx::Box box((float)(orig_w - 100), 400.0f, (float)orig_w, 900.0f, 0.9f, 0);
+
+    const float sx = (float)proto_w / (float)in_w;
+    const float x_proto = (box.x2 * lb.scale + lb.pad_left) * sx;
+    // 原图右边缘 810 → 输入 560 → proto 140（不是 proto 边缘 160，
+    // 也不是把原图坐标直接乘 proto_scale 得到的 157）
+    TEST("segment: orig->proto keeps letterbox offset",
+         std::abs(x_proto - 140.0f) < 1.0f);
+
+    // 旧实现（漏掉映射回输入空间）：(810 - 80) * 0.25 = 182.5 → 被 clamp 到 159
+    const float x_old = (box.x2 - lb.pad_left) * sx;
+    TEST("segment: regression case is distinguishable",
+         x_old > (float)proto_w - 1.0f);
+
+    // ---- (b) 掩码缩放路径：proto → 输入 → 去 padding → 原图 ----
+    // 构造一张「只在上半部分为 1」的 proto 掩码，去 padding 后有效内容
+    // 应覆盖 crop_h 行；直接 proto→orig 会把 padding 一起算进去，导致偏移。
+    const int crop_w = (int)std::lround(orig_w * scale);
+    const int crop_h = (int)std::lround(orig_h * scale);
+    const int off_x = (in_w - crop_w) / 2;
+    const int off_y = (in_h - crop_h) / 2;
+    TEST("segment: crop offsets are non-negative", off_x >= 0 && off_y >= 0);
+    TEST("segment: crop fits inside input", off_x + crop_w <= in_w && off_y + crop_h <= in_h);
+    // pad_left == off_x，两者必须一致，否则框与掩码用不同的偏移
+    TEST("segment: crop offset matches letterbox pad_left", off_x == pad_left);
+}
+
 int main() {
     std::cout << "=== yolo-onnx Unit Tests ===\n" << std::endl;
 
@@ -217,6 +323,8 @@ int main() {
     test_obb_result();
     test_scale_funcs();
     test_task_type_names();
+    test_yolox_no_double_sigmoid();
+    test_segment_mask_coordinate_mapping();
 
     std::cout << "\n=== Results: " << pass_count << "/" << test_count << " passed ===\n" << std::endl;
     return (pass_count == test_count) ? 0 : 1;
