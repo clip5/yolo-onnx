@@ -28,8 +28,15 @@ import onnxruntime as ort
 
 
 # --------------------------------------------------------------- preprocess
-def letterbox(img, new_shape, color=(114, 114, 114), swap=True, scale_fill=False):
-    """Ultralytics LetterBox: keep aspect, pad, centered.
+def letterbox(img, new_shape, color=(114, 114, 114), swap=True, scale_fill=False,
+              align='center'):
+    """Letterbox: keep aspect ratio, pad.
+
+    align='center'  : padding split between both sides (ultralytics / v8 / v11 / v26)
+    align='topleft' : padding only on right & bottom — matches the official
+                      YOLOX preproc (yolox/data/data_augment.py::preproc):
+                          padded[:int(H*r), :int(W*r)] = resized
+                      so pad_left/pad_top are 0 and scale-back is a plain /r.
 
     Returns (canvas, info) with info in the same spirit as LetterboxInfo:
       scale, pad_left, pad_top, orig_w, orig_h, target_w, target_h
@@ -41,7 +48,12 @@ def letterbox(img, new_shape, color=(114, 114, 114), swap=True, scale_fill=False
         th, tw = new_shape[0], new_shape[1]
 
     r = min(tw / w, th / h)
-    new_w, new_h = int(round(w * r)), int(round(h * r))
+    if align == 'topleft':
+        # 官方 YOLOX 用 int() 截断而非 round()，与 C++ 侧 (int)(w*scale) 保持一致
+        new_w, new_h = int(w * r), int(h * r)
+    else:
+        new_w, new_h = int(round(w * r)), int(round(h * r))
+
     if scale_fill:
         new_w, new_h = tw, th
         r = max(tw / w, th / h)
@@ -49,7 +61,6 @@ def letterbox(img, new_shape, color=(114, 114, 114), swap=True, scale_fill=False
         canvas = cv2.resize(img, (tw, th), interpolation=cv2.INTER_LINEAR)
         top, left = dh // 2, dw // 2
         canvas = canvas[top:top + new_h, left:left + new_w]
-        pad = (0, 0)
     else:
         dw, dh = tw - new_w, th - new_h
         canvas = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
@@ -57,16 +68,20 @@ def letterbox(img, new_shape, color=(114, 114, 114), swap=True, scale_fill=False
 
     top = max(0, int(round(top)))
     left = max(0, int(round(left)))
-    if not scale_fill:
-        padded = cv2.copyMakeBorder(canvas, top, dh - top, left, dw - left,
+    if align == 'topleft':
+        top, left = 0, 0
+        bottom, right = th - new_h, tw - new_w
+        canvas = cv2.copyMakeBorder(canvas, 0, max(0, bottom), 0, max(0, right),
                                     cv2.BORDER_CONSTANT, value=color)
-        canvas = padded
+    elif scale_fill:
+        canvas = cv2.copyMakeBorder(canvas, top, dh - top, left, dw - left,
+                                    cv2.BORDER_CONSTANT, value=color)
     else:
         canvas = cv2.copyMakeBorder(canvas, top, dh - top, left, dw - left,
                                     cv2.BORDER_CONSTANT, value=color)
 
     info = dict(scale=r, pad_left=left, pad_top=top,
-                orig_w=w, orig_h=h, target_w=tw, target_h=th)
+                orig_w=w, orig_h=h, target_w=tw, target_h=th, align=align)
     return canvas, info
 
 
@@ -170,6 +185,22 @@ def onnx_meta(path):
         return {"_error": str(e)}
 
 
+def yolox_has_decoder(path):
+    """True if the export already contains the YOLOX box decoder.
+
+    带 decoder 的导出，图里会有Exp 节点（官方解码里 size = exp(t) 一类计算）。
+    这是比值域启发式可靠得多的判别方式：新格式的 cols 0..3 已经是像素坐标
+    （值域 0..~700），旧格式是原始 logit（约 -3..4），两者值域确实能分开，
+    但依赖实测阈值很脆弱，图结构是硬证据。
+    """
+    try:
+        import onnx
+        m = onnx.load(path, load_external_data=False)
+        return any(n.op_type in ('Exp', 'Pow', 'Sqrt') for n in m.graph.node)
+    except Exception:
+        return False
+
+
 def n_classes_from_meta(path, default=80):
     md = onnx_meta(path)
     names = md.get('names')
@@ -196,12 +227,16 @@ def decode_v8_detect(out, num_classes, conf, iou, info):
     return finalize(p[sel, :4], scores[sel], labels[sel], info, iou)
 
 
-def decode_yolox_detect(out, num_classes, conf, iou, info, imgsz_w, imgsz_h):
-    """yolox: [1, N, 5+C] — cols 0:4 are RAW box logits, col4 obj and
-    5: class scores are ALREADY sigmoided (see the ONNX graph: the concat is
-    conv2d_reg (raw) + sigmoid(head)). Boxes need the official decode:
-        center = (sigmoid(t)*2 - 0.5 + grid) * stride
-        size   = (sigmoid(t)*2)^2 * stride
+def decode_yolox_detect(out, num_classes, conf, iou, info, imgsz_w, imgsz_h,
+                        has_decoder=False):
+    """yolox: [1, N, 5+C]。两种导出布局，用图里有无 Exp 节点判别（硬证据）：
+
+    (a) 带 decoder（has_decoder=True）：cols 0:4 **已是像素 xywh**，
+        col4 obj 与 5: 类分数已经 sigmoid，直接用。
+    (b) 不带 decoder（False）：cols 0:4 是原始 logit，需要官方解码
+            center = (sigmoid(t)*2 - 0.5 + grid) * stride
+            size   = (sigmoid(t)*2)^2 * stride
+        col4 / 5: 同样已经 sigmoid 过（Concat 里 cls 分支带 Sigmoid）。
     """
     p = out[0]
     obj = p[:, 4]
@@ -209,6 +244,9 @@ def decode_yolox_detect(out, num_classes, conf, iou, info, imgsz_w, imgsz_h):
     labels = cls.argmax(1)
     scores = obj * cls.max(1)
     sel = scores >= conf
+
+    if has_decoder:
+        return finalize(p[sel, :4], scores[sel], labels[sel], info, iou)
 
     boxes = []
     strides = [8, 16, 32]
@@ -320,12 +358,16 @@ def run_ort(path, task, img_bgr, imgsz, conf, iou, num_threads):
         size = (imgsz[1], imgsz[0])
 
     swap_rb = model_type != 'ppyoloe'
+    scale = 1.0 / 255.0
     mean, std = (0., 0., 0.), (1., 1., 1.)
+    align = 'center'
     if model_type == 'yolox':
-        mean, std = (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)
+        # 官方 YOLOX preproc：左上角对齐 + 原始 0-255，不做 /255，也不做 mean/std
+        align = 'topleft'
+        scale = 1.0
 
-    canvas, info = letterbox(img_bgr, (size[1], size[0]))
-    blob = make_blob(canvas, swap_rb=swap_rb, mean=mean, std=std)
+    canvas, info = letterbox(img_bgr, (size[1], size[0]), align=align)
+    blob = make_blob(canvas, swap_rb=swap_rb, scale=scale, mean=mean, std=std)
     inp = sess.get_inputs()[0]
     outs = sess.run(None, {inp.name: blob})
 
@@ -337,7 +379,8 @@ def run_ort(path, task, img_bgr, imgsz, conf, iou, num_threads):
         if model_type == 'v5':
             d = decode_v5_detect(outs[0], nc, conf, iou, info)
         elif model_type == 'yolox':
-            d = decode_yolox_detect(outs[0], nc, conf, iou, info, size[0], size[1])
+            d = decode_yolox_detect(outs[0], nc, conf, iou, info, size[0], size[1],
+                                    has_decoder=yolox_has_decoder(path))
         else:
             d = decode_v8_detect(outs[0], nc, conf, iou, info)
         # finalize() already scaled boxes back to original-image space
@@ -399,8 +442,12 @@ def run_ultralytics(path, img_path, imgsz, conf, iou, task):
 
 
 def to_jsonable(o):
+    """numpy → json。保留整数 dtype：label 必须是 int，转成 float 会让
+    COCO[0.0] 之类的类别名字典查询失败。"""
     if isinstance(o, np.ndarray):
-        return o.astype(float).tolist() if o.dtype != bool else o.astype(int).tolist()
+        if np.issubdtype(o.dtype, np.integer) or o.dtype == bool:
+            return o.astype(int).tolist()
+        return o.astype(float).tolist()
     return o
 
 

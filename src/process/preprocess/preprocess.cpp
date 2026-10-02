@@ -15,11 +15,16 @@ PreProcessParams PreProcessParams::for_model(ModelType type, int width, int heig
         case ModelType::PPYOLOE:
             p.swap_rb = false;
             break;
-        // YOLOX 使用 ImageNet mean/std 归一化
+        // 官方 YOLOX 预处理（yolox/data/data_augment.py::preproc）：
+        //   padded[:int(H*r), :int(W*r)] = resized   ← padding 只加在右下
+        //   transpose(2,0,1)                          ← RGB
+        //   ascontiguousarray(float32)                ← 不除 255、不做 mean/std
+        // 三处都与本项目的默认值不同（居中 padding、/255、ImageNet 归一化），
+        // 用默认值会让 YOLOX 大面积漏检（实测 bus.jpg 只能检出 2/5 个目标）。
         case ModelType::YOLOX: {
-            static const float mean[3] = {0.485f, 0.456f, 0.406f};
-            static const float std_[3] = {0.229f, 0.224f, 0.225f};
-            for (int c = 0; c < 3; c++) { p.mean[c] = mean[c]; p.std[c] = std_[c]; }
+            p.align = PadAlign::TopLeft;
+            p.scale_factor = 1.0f;                 // 保留原始 0-255 像素值
+            for (int c = 0; c < 3; c++) { p.mean[c] = 0.0f; p.std[c] = 1.0f; }
             break;
         }
         default:
@@ -42,8 +47,14 @@ PreProcessResult PreProcess::run(const cv::Mat& image) const {
     float scale = std::min((float)target_w / img_w, (float)target_h / img_h);
     int new_w = (int)(img_w * scale);
     int new_h = (int)(img_h * scale);
-    int pad_left = (target_w - new_w) / 2;
-    int pad_top  = (target_h - new_h) / 2;
+    // TopLeft 对齐（官方 YOLOX）：padding 只加在右侧/下侧，pad_left/pad_top 恒为 0，
+    // 坐标还原只需除以 scale。
+    int pad_left = 0;
+    int pad_top  = 0;
+    if (params_.align == PadAlign::Center) {
+        pad_left = (target_w - new_w) / 2;
+        pad_top  = (target_h - new_h) / 2;
+    }
 
     // 复用画布：尺寸不变时不重新分配，只重写像素内容
     if (canvas_.empty() || canvas_.size() != cv::Size(target_w, target_h)) {

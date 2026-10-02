@@ -215,6 +215,14 @@ inline cv::Mat make_nchw_blob(int batch, int channels, int height, int width) {
     return cv::Mat(4, sizes, CV_32F);
 }
 
+/// letterbox 时 padding 的对齐方式
+enum class PadAlign {
+    Center = 0,  // 上下左右均分（YOLOv5/8/11/26、PPYOLOE 等）
+    TopLeft = 1, // padding 只加在右侧/下侧（官方 YOLOX preproc：
+                 // padded[:int(H*r), :int(W*r)] = resized —— 目标框坐标还原
+                 // 因此只需除以 r，不含 padding 偏移）
+};
+
 // ============================================================
 // 预处理参数（描述一个模型对输入张量的要求）
 // ============================================================
@@ -227,6 +235,7 @@ struct PreProcessParams {
     // 可选的每通道 mean/std（在 scale_factor 之后应用: (v*scale - mean) / std）
     float mean[3] = {0.0f, 0.0f, 0.0f};
     float std[3]  = {1.0f, 1.0f, 1.0f};
+    PadAlign align        = PadAlign::Center;  // padding 对齐方式
 
     /// 按模型类型给出默认参数（实现在 src/process/preprocess/preprocess.cpp）
     static PreProcessParams for_model(ModelType type, int width, int height);

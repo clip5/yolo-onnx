@@ -201,15 +201,26 @@ def main():
     ap.add_argument('--cpp')
     ap.add_argument('--ref')
     ap.add_argument('--glob')
+    ap.add_argument('--ref-dir', default=None,
+                    help='reference dir paired with --glob '
+                         '(default: <cpp父目录>/../ref)')
     ap.add_argument('--iou', type=float, default=0.5)
     ap.add_argument('-v', '--verbose', action='store_true')
     args = ap.parse_args()
 
     pairs = []
     if args.glob:
+        # 参考目录默认取 cpp 路径里的 <cpp父目录>/../ref（如 output/cpp -> output/ref），
+        # 可用 --ref-dir 覆盖；不写死 'out/ref'，否则换一个输出目录就静默匹配不到。
+        ref_dir = args.ref_dir
+        if ref_dir is None:
+            # 'output/cpp/*.json' 和 'output/cpp/yolox_s__*.json' 都要得到 'output/ref'：
+            # 取 glob 所在的 cpp 目录，再取它的同级 ref 目录。
+            cpp_dir = os.path.dirname(args.glob)
+            ref_dir = os.path.join(os.path.dirname(cpp_dir), 'ref')
         for c in sorted(glob.glob(args.glob)):
             base = os.path.basename(c)
-            r = os.path.join('out/ref', base)
+            r = os.path.join(ref_dir, base)
             if os.path.exists(r):
                 pairs.append((c, r))
     else:
