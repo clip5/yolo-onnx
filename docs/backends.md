@@ -1,6 +1,6 @@
 # 推理后端与 Execution Provider
 
-本目录是推理引擎层。所有后端消费**同一份 `.onnx`**，转换与图优化在各自运行时内部完成，因此新增后端不需要改动上层的预处理 / 解码 / 后处理管线。
+推理引擎层（`src/core/`）的设计与使用。所有后端消费**同一份 `.onnx`**，转换与图优化在各自运行时内部完成，因此新增后端不需要改动上层的预处理 / 解码 / 后处理管线。
 
 ## 📑 目录
 
@@ -60,7 +60,7 @@
 | `YOLO_ONNX_WITH_CANN` | *预留* | — | 昇腾，onnx → ATC → `.om` |
 | `YOLO_ONNX_WITH_RKNN` | *预留* | — | 瑞芯微，onnx → rknn-toolkit2 → `.rknn` |
 
-注册点在 [`backend_factory.cpp`](backend_factory.cpp)，用 `#ifdef` 包起来：
+注册点在 [`backend_factory.cpp`](../src/core/backend_factory.cpp)，用 `#ifdef` 包起来：
 
 ```cpp
 std::shared_ptr<Backend> create_backend(const std::string& backend_name) {

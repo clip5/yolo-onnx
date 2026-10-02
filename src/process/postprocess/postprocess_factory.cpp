@@ -28,6 +28,9 @@ std::shared_ptr<PostProcess> create_postprocess(TaskType task, ModelType model_t
             return std::make_shared<PostProcessPose>(params, decoder);
         case TaskType::OBB:
             return std::make_shared<PostProcessOBB>(params, decoder);
+        case TaskType::Sem:
+            // 语义分割没有候选框，Decoder 不参与；但仍走工厂以便统一装配。
+            return std::make_shared<PostProcessSem>(params, decoder);
         default:
             std::cerr << "[create_postprocess] Unknown task type: "
                       << task_type_name(task) << std::endl;

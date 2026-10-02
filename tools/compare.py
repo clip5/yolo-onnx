@@ -40,6 +40,87 @@ def load_boxes(obj, key='boxes'):
     return b, s, l
 
 
+def load_obb(obj):
+    """Normalize OBB boxes to (N,5) cx,cy,w,h,angle + scores + labels.
+
+    Both sides write a list of dicts with the same keys (dump_json.cpp and
+    ref_onnx.py), so one reader covers them.
+    """
+    raw = obj.get('obb')
+    if not raw:
+        return np.zeros((0, 5)), np.zeros((0,)), np.zeros((0,), int)
+    b = np.array([[d['cx'], d['cy'], d['w'], d['h'], d['angle']] for d in raw], dtype=float)
+    s = np.array([d.get('score', 0.0) for d in raw], dtype=float)
+    l = np.array([d.get('label', -1) for d in raw], dtype=int)
+    return b.reshape(-1, 5), s, l
+
+
+def obb_iou_matrix(a, b):
+    """Pairwise rotated IoU via cv2, matching the C++ obb_iou geometry."""
+    import cv2
+    if a.shape[0] == 0 or b.shape[0] == 0:
+        return np.zeros((a.shape[0], b.shape[0]))
+    ra = [cv2.RotatedRect((float(x[0]), float(x[1])), (float(x[2]), float(x[3])),
+                          float(np.degrees(x[4]))) for x in a]
+    rb = [cv2.RotatedRect((float(x[0]), float(x[1])), (float(x[2]), float(x[3])),
+                          float(np.degrees(x[4]))) for x in b]
+    M = np.zeros((len(ra), len(rb)))
+    for i, r1 in enumerate(ra):
+        a1 = float(r1.size[0]) * float(r1.size[1])   # OpenCV 5: size is a plain tuple
+        for j, r2 in enumerate(rb):
+            a2 = float(r2.size[0]) * float(r2.size[1])
+            # returns (retval, points); points is None when rects don't overlap
+            _, pts = cv2.rotatedRectangleIntersection(r1, r2)
+            inter = cv2.contourArea(pts) if pts is not None and len(pts) else 0.0
+            M[i, j] = inter / max(a1 + a2 - inter, 1e-9)
+    return M
+
+
+def load_sem(obj):
+    """Rebuild the class-id map from the per-row RLE both writers emit.
+
+    sem_shape is [width, height] on both sides (Mask::width/height and
+    arr.shape[1], shape[0] respectively) — note the order is (w, h), not (h, w).
+    """
+    rows = obj.get('sem_rle')
+    if rows is None:
+        return None
+    shape = obj.get('sem_shape')
+    if shape:
+        w, h = int(shape[0]), int(shape[1])
+    else:
+        h = len(rows)
+        w = max((x + n for r in rows for x, _, n in r), default=0)
+    out = np.zeros((h, w), np.int32)
+    for y, runs in enumerate(rows):
+        if y >= h:
+            break
+        for x, cls, n in runs:
+            if x + n > w:      # trust the rows over a truncated shape
+                w = x + n
+                out = np.pad(out, ((0, max(0, h - out.shape[0])), (0, x + n - w)))
+            out[y, x:x + n] = cls
+    return out
+
+
+def sem_agreement(cpp, ref):
+    """Pixel-wise class agreement between two class-id maps.
+
+    Resamples to a common grid (nearest — class ids must not be interpolated).
+    """
+    a, b = np.asarray(cpp), np.asarray(ref)
+    if a.size == 0 or b.size == 0:
+        return None
+    if a.shape != b.shape:
+        h, w = min(a.shape[0], b.shape[0]), min(a.shape[1], b.shape[1])
+        a, b = a[:h, :w], b[:h, :w]
+    same = (a == b)
+    return dict(sem_pixel_acc=round(float(same.mean()), 5),
+                sem_mismatch=int((~same).sum()),
+                sem_total=int(same.size),
+                sem_classes_cpp=len(np.unique(a)), sem_classes_ref=len(np.unique(b)))
+
+
 def iou_matrix(a, b):
     if a.shape[0] == 0 or b.shape[0] == 0:
         return np.zeros((a.shape[0], b.shape[0]))
@@ -124,6 +205,72 @@ def compare(cpp_path, ref_path, iou_thr=0.5, verbose=False):
     with open(ref_path) as f:
         rj = json.load(f)
 
+    task = cj.get('task') or rj.get('task')
+
+    # ---- sem：类别图逐像素比对，没有框 / NMS / IoU ----
+    if task == 'sem' or cj.get('sem_rle') is not None:
+        cs_map, rs_map = load_sem(cj), load_sem(rj)
+        out = dict(cpp=cpp_path, ref=ref_path, task='sem',
+                   n_cpp=0 if cs_map is None else int(cs_map.size),
+                   n_ref=0 if rs_map is None else int(rs_map.size),
+                   n_matched=0, iou_min=0.0, iou_mean=0.0,
+                   coord_max_abs_diff=0.0, score_max_abs_diff=0.0,
+                   missed_in_cpp=0, extra_in_cpp=0, label_mismatches=0)
+        if cs_map is not None and rs_map is not None:
+            out.update(sem_agreement(cs_map, rs_map))
+            out['status'] = 'PASS' if out['sem_pixel_acc'] >= 0.99 else 'FAIL'
+        else:
+            out['status'] = 'FAIL'
+        return out, cj, rj
+
+    # ---- obb：旋转框，比 IoU + 角度/尺寸差 ----
+    if task == 'obb' or cj.get('obb') is not None or rj.get('obb') is not None:
+        cb5, cs, cl = load_obb(cj)
+        rb5, rs, rl = load_obb(rj)
+        out = dict(cpp=cpp_path, ref=ref_path, task='obb',
+                   n_cpp=len(cb5), n_ref=len(rb5), n_matched=0)
+        if cb5.shape[0] and rb5.shape[0]:
+            M = obb_iou_matrix(cb5, rb5)
+            pairs, used_r = [], set()
+            for i in np.argsort(-cs):
+                best_j, best = -1, iou_thr
+                for j in range(rb5.shape[0]):
+                    if j in used_r or cl[i] != rl[j]:
+                        continue
+                    if M[i, j] >= best:
+                        best, best_j = M[i, j], j
+                if best_j >= 0:
+                    used_r.add(best_j)
+                    pairs.append((int(i), int(best_j), float(best)))
+            ious = [p[2] for p in pairs]
+            # 角度差按「等价角度」折算：w/h 互换后角度相差 90° 是同一个框
+            dang, dwh, dsc = [], [], []
+            for i, j, _ in pairs:
+                d = abs(cb5[i, 4] - rb5[j, 4]) % (np.pi / 2)
+                dang.append(min(d, np.pi / 2 - d))
+                dwh.append(max(abs(cb5[i, 2] - rb5[j, 2]), abs(cb5[i, 3] - rb5[j, 3])))
+                dsc.append(abs(cs[i] - rs[j]))
+            out.update(
+                n_matched=len(pairs),
+                iou_min=round(float(np.min(ious)), 4) if ious else 0.0,
+                iou_mean=round(float(np.mean(ious)), 4) if ious else 0.0,
+                obb_angle_max=round(float(max(dang)), 4) if dang else 0.0,
+                obb_wh_max=round(float(max(dwh)), 3) if dwh else 0.0,
+                coord_max_abs_diff=round(float(max(dwh)), 3) if dwh else 0.0,
+                score_max_abs_diff=round(float(max(dsc)), 4) if dsc else 0.0,
+                missed_in_cpp=int(len(rb5) - len(pairs)),
+                extra_in_cpp=int(len(cb5) - len(pairs)),
+                label_mismatches=0,
+            )
+        else:
+            out.update(iou_min=0.0, iou_mean=0.0, coord_max_abs_diff=0.0,
+                       score_max_abs_diff=0.0,
+                       missed_in_cpp=int(len(rb5)), extra_in_cpp=int(len(cb5)),
+                       label_mismatches=0)
+        out['status'] = 'PASS' if (out['missed_in_cpp'] == 0
+                                   and out['iou_min'] >= iou_thr) else 'FAIL'
+        return out, cj, rj
+
     cb, cs, cl = load_boxes(cj)
     rb, rs, rl = load_boxes(rj)
 
@@ -186,10 +333,22 @@ def compare(cpp_path, ref_path, iou_thr=0.5, verbose=False):
 
 
 def fmt(o):
+    if o.get('task') == 'sem':
+        if 'sem_pixel_acc' in o:
+            s = (f"{os.path.basename(o['cpp']):42s} sem px_acc={o['sem_pixel_acc']:.5f} "
+                 f"mismatch={o['sem_mismatch']}/{o['sem_total']} "
+                 f"classes cpp/ref={o['sem_classes_cpp']}/{o['sem_classes_ref']}")
+        else:
+            s = f"{os.path.basename(o['cpp']):42s} sem (no class map on one side)"
+        return s + f"  [{o['status']}]"
+
     s = (f"{os.path.basename(o['cpp']):42s} cpp={o['n_cpp']:3d} ref={o['n_ref']:3d} "
          f"match={o['n_matched']:3d} iou[min/mean]={o['iou_min']:.3f}/{o['iou_mean']:.3f} "
          f"dxy={o['coord_max_abs_diff']:.2f} dscore={o['score_max_abs_diff']:.4f} "
          f"miss={o['missed_in_cpp']} extra={o['extra_in_cpp']} lblbad={o['label_mismatches']}")
+    if o.get('task') == 'obb':
+        s += (f" dang={o.get('obb_angle_max', 0.0):.4f}rad"
+              f" dwh={o.get('obb_wh_max', 0.0):.2f}px")
     if 'mask_iou_mean' in o:
         s += f" maskIoU={o['mask_iou_mean']:.4f}/{o['mask_iou_min']:.4f}"
     s += f"  [{o['status']}]"

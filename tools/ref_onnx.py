@@ -343,6 +343,112 @@ def decode_v8_segment(out, num_classes, num_masks, conf, iou, info, imgsz):
     return dict(boxes=scale_boxes(b, info), scores=scores, labels=labels, masks=masks)
 
 
+def _rr_area(rr):
+    """Area of a cv2.RotatedRect.
+
+    OpenCV 5.0 returns RotatedRect.size as a plain tuple, so .size.width
+    raises AttributeError there; index access works on both 4.x and 5.x.
+    """
+    return float(rr.size[0]) * float(rr.size[1])
+
+
+def decode_v8_obb(out, num_classes, conf, iou, info):
+    """v8/v11/v26 OBB: [1, 4+nc+1, N].
+
+    Channel layout (verified on yolo26s-obb.onnx, [1,20,21504] with nc=15):
+        ch 0..3   cx,cy,w,h in pixels (decoded in-graph)
+        ch 4..4+nc-1 class scores, already sigmoided
+        ch 4+nc   angle in RADIANS — the graph already applied the activation
+                  ((sigmoid(x)-0.25)*pi for OBB26, sigmoid(x)*pi for OBB)
+    The angle is therefore read raw; applying another sigmoid here is the bug
+    that used to squash every rotation into (0, pi).
+    """
+    p = out[0].T                                  # N x (4+nc+1)
+    cls = p[:, 4:4 + num_classes]
+    angle = p[:, 4 + num_classes]
+
+    labels = cls.argmax(1)
+    scores = cls.max(1)
+    sel = scores >= conf
+    p, scores, labels, angle = p[sel], scores[sel], labels[sel], angle[sel]
+
+    cx, cy, w, h = p[:, 0], p[:, 1], p[:, 2], p[:, 3]
+
+    # rotated NMS via cv2 RotatedRect (same geometry as the C++ obb_nms)
+    boxes = [cv2.RotatedRect((float(a), float(b)), (float(c), float(d)), float(np.degrees(e)))
+             for a, b, c, d, e in zip(cx, cy, w, h, angle)]
+    order = np.argsort(-scores)
+    keep = []
+    while order.size:
+        i = order[0]
+        keep.append(int(i))
+        if order.size == 1:
+            break
+        rest = order[1:]
+        ious = []
+        for j in rest:
+            rr1, rr2 = boxes[i], boxes[j]
+            # rotatedRectangleIntersection returns (retval, points); points is
+            # None when the rects do not overlap, hence the explicit unpack.
+            _, pts = cv2.rotatedRectangleIntersection(rr1, rr2)
+            inter = cv2.contourArea(pts) if pts is not None and len(pts) else 0.0
+            union = _rr_area(rr1) + _rr_area(rr2) - inter
+            ious.append(inter / max(union, 1e-9))
+        ious = np.asarray(ious)
+        order = rest[ious < iou]
+
+    keep = np.asarray(keep, int)
+    keep = keep[np.argsort(-scores[keep])]
+
+    # scale back to original image space (rotation angle is scale-invariant)
+    xywh = np.stack([cx, cy, w, h], 1).astype(np.float32)
+    xyxy = scale_boxes(xywh2xyxy(xywh), info)
+    s = float(info['scale'])
+    cx_o = (xyxy[:, 0] + xyxy[:, 2]) / 2.0
+    cy_o = (xyxy[:, 1] + xyxy[:, 3]) / 2.0
+    return dict(obb_cx=cx_o[keep], obb_cy=cy_o[keep],
+                obb_w=xywh[keep, 2] / s, obb_h=xywh[keep, 3] / s,
+                obb_angle=angle[keep], scores=scores[keep], labels=labels[keep],
+                boxes=xyxy[keep])
+
+
+def decode_sem(out, info):
+    """Semantic segmentation: model output is [1,H,W] class-id map.
+
+    Ultralytics bakes the class reduction into the graph (Resize -> ArgMax ->
+    Cast(uint8)), so no argmax is needed here. Remap the letterboxed class map
+    back to original-image space the same way the C++ side does: crop the
+    padding, then nearest-neighbour resize (class ids must not be interpolated)
+    to the ORIGINAL image size — not to model-input size, otherwise the two
+    maps have different grids and a pixel-wise diff is meaningless.
+    """
+    m = np.asarray(out[0])
+    if m.ndim == 3:
+        m = m[0]
+    m = m.astype(np.int32)
+    mh, mw = m.shape[:2]
+    tw, th = info['target_w'], info['target_h']
+
+    cw = min(tw, int(round(info['orig_w'] * info['scale'])))
+    ch = min(th, int(round(info['orig_h'] * info['scale'])))
+    ox = max(0, (tw - cw) // 2)
+    oy = max(0, (th - ch) // 2)
+    cx = int(round(ox * mw / tw))
+    cy = int(round(oy * mh / th))
+    cwid = min(int(round(cw * mw / tw)), mw - cx)
+    chgt = min(int(round(ch * mh / th)), mh - cy)
+    if cwid <= 0 or chgt <= 0:
+        cx = cy = 0
+        cwid, chgt = mw, mh
+
+    cropped = m[cy:cy + chgt, cx:cx + cwid]
+    ow, oh = int(info['orig_w']), int(info['orig_h'])
+    if cropped.shape[:2] != (oh, ow):
+        cropped = cv2.resize(cropped.astype(np.float32), (ow, oh),
+                             interpolation=cv2.INTER_NEAREST).astype(np.int32)
+    return cropped
+
+
 def run_ort(path, task, img_bgr, imgsz, conf, iou, num_threads):
     so = ort.SessionOptions()
     so.intra_op_num_threads = num_threads
@@ -397,6 +503,19 @@ def run_ort(path, task, img_bgr, imgsz, conf, iou, num_threads):
                                   shapes=[list(o.shape) for o in outs]),
                     boxes=d['boxes'], scores=d['scores'], labels=d['labels'],
                     masks=d['masks'])
+
+    if task == 'obb':
+        d = decode_v8_obb(outs[0], nc, conf, iou, info)
+        return dict(meta=meta,
+                    boxes=d['boxes'], scores=d['scores'], labels=d['labels'],
+                    masks=None, obb=d)
+
+    if task == 'sem':
+        # 无候选框：无 NMS、无置信度阈值。类别 id 图直接还原到原图尺寸。
+        return dict(meta=meta, boxes=np.zeros((0, 4), np.float32),
+                    scores=np.zeros((0,), np.float32),
+                    labels=np.zeros((0,), int), masks=None,
+                    sem=decode_sem(outs[0], info))
     raise ValueError(task)
 
 
@@ -425,6 +544,19 @@ def run_ultralytics(path, img_path, imgsz, conf, iou, task):
     res = m.predict(img_path, imgsz=imgsz, conf=conf, iou=iou,
                     device='cpu', verbose=False)[0]
     out = dict()
+
+    # OBB models report rotated boxes in res.obb (cx,cy,w,h,r), NOT res.boxes —
+    # reading res.boxes silently yields 0 detections and looks like a total
+    # mismatch, so pick the right field per task.
+    if task == 'obb' and getattr(res, 'obb', None) is not None and len(res.obb):
+        xywhr = res.obb.xywhr.cpu().numpy()
+        out['boxes'] = xywh2xyxy(xywhr[:, :4].astype(np.float32))
+        out['scores'] = res.obb.conf.cpu().numpy()
+        out['labels'] = res.obb.cls.cpu().numpy().astype(int)
+        out['xywhr'] = xywhr
+        out['masks'] = None      # callers unconditionally read this key
+        return out
+
     if res.boxes is not None and len(res.boxes):
         out['boxes'] = res.boxes.xyxy.cpu().numpy()
         out['scores'] = res.boxes.conf.cpu().numpy()
@@ -454,7 +586,8 @@ def to_jsonable(o):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--model', required=True)
-    ap.add_argument('--task', default='detect', choices=['detect', 'segment'])
+    ap.add_argument('--task', default='detect',
+                    choices=['detect', 'segment', 'obb', 'sem'])
     ap.add_argument('--image', required=True)
     ap.add_argument('--size', default='640',
                     help='int or WxH, e.g. 640 or 640x384')
@@ -493,7 +626,34 @@ def main():
                                 ort_res['masks'].shape[1],
                                 ort_res['masks'].shape[2]]
 
-    if not args.no_ul:
+    # obb: cx,cy,w,h,angle 逐框（与 C++ dump_json 的 obb 字段同名同义）
+    if ort_res.get('obb') is not None:
+        o = ort_res['obb']
+        result['obb'] = [dict(cx=float(o['obb_cx'][i]), cy=float(o['obb_cy'][i]),
+                              w=float(o['obb_w'][i]), h=float(o['obb_h'][i]),
+                              angle=float(o['obb_angle'][i]),
+                              score=float(o['scores'][i]), label=int(o['labels'][i]))
+                         for i in range(len(o['scores']))]
+
+    # sem: 类别 id 图，逐行 RLE（[起始列, 类别id, 长度]），与 C++ dump_json 同格式
+    if ort_res.get('sem') is not None:
+        sem = ort_res['sem']
+        rows = []
+        for y in range(sem.shape[0]):
+            row = sem[y]
+            runs, x = [], 0
+            while x < row.shape[0]:
+                cls = int(row[x])
+                n = 1
+                while x + n < row.shape[0] and int(row[x + n]) == cls:
+                    n += 1
+                runs.append([x, cls, n])
+                x += n
+            rows.append(runs)
+        result['sem_shape'] = [int(sem.shape[1]), int(sem.shape[0])]
+        result['sem_rle'] = rows
+
+    if not args.no_ul and args.task != 'sem':
         try:
             ul = run_ultralytics(args.model, args.image, imgsz,
                                  args.conf, args.iou, args.task)
@@ -505,6 +665,10 @@ def main():
             if ul['masks'] is not None:
                 result['ultralytics']['masks'] = to_jsonable(ul['masks'])
                 result['ultralytics']['mask_shape'] = ul['mask_shape']
+            # obb: keep ultralytics' own rotated params (cx,cy,w,h,rad) so the
+            # comparison is against ultralytics' numbers, not our re-decode.
+            if ul.get('xywhr') is not None:
+                result['ultralytics']['xywhr'] = to_jsonable(ul['xywhr'])
         except Exception as e:
             result['ultralytics_error'] = repr(e)
 

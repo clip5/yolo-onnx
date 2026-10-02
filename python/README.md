@@ -15,7 +15,7 @@ make -j$(nproc)
 
 产物：`build/python/yolo_onnx_py*.so`，可直接 `import`（或用 `PYTHONPATH=build/python`）。
 
-> Python 绑定**只编译 ORT 后端**，与主库一致。EP 的完整说明见 [src/core/README.md](../src/core/README.md)（注意 `ModelConfig` 暂未暴露 `custom_config`，见下文）。
+> Python 绑定**只编译 ORT 后端**，与主库一致。EP 的完整说明见 [docs/backends.md](../docs/backends.md)（注意 `ModelConfig` 暂未暴露 `custom_config`，见下文）。
 
 ## 快速上手
 
@@ -70,6 +70,7 @@ result = model.infer(cv2.imread("bus.jpg"))     # 或 model.infer_file("bus.jpg"
 | `infer_segment(img)` / `infer_segment_file(path)` | `SegmentResult` |
 | `infer_pose(img)` / `infer_pose_file(path)` | `PoseResult` |
 | `infer_obb(img)` / `infer_obb_file(path)` | `OBBResult` |
+| `infer_sem(img)` / `infer_sem_file(path)` | `SemResult` |
 
 分割示例：
 
@@ -86,9 +87,12 @@ for box, mask in zip(seg.boxes, seg.masks):
 
 ## 导出的 API
 
-**枚举**：`ModelType`（`YOLOv5` / `YOLOX` / `YOLOv8` / `YOLOv11` / `YOLO26` / `PPYOLOE`）、`TaskType`（`Detect` / `Segment` / `Pose` / `OBB`）
+**枚举**：`ModelType`（`YOLOv5` / `YOLOX` / `YOLOv8` / `YOLOv11` / `YOLO26` / `PPYOLOE`）、`TaskType`（`Detect` / `Segment` / `Pose` / `OBB` / `Sem`）
 
-**结果类型**：`Box` / `Keypoint` / `Mask` / `OBBBox` / `DetectResult` / `SegmentResult` / `PoseResult` / `OBBResult` / `LetterboxInfo`
+**结果类型**：`Box` / `Keypoint` / `Mask` / `OBBBox` / `DetectResult` / `SegmentResult` / `PoseResult` / `OBBResult` / `SemResult` / `LetterboxInfo`
+
+> `SemResult.mask` 是**类别 id 图**（每像素一个整数，不是概率）——ultralytics 的语义分割
+> 导出把 argmax 烘进了图里，模型输出本身就是 `[1,H,W]` 的类别图。
 
 **函数**：
 - `create_model(model_type)` / `create_model(model_type, task)`

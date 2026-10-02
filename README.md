@@ -8,16 +8,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)]()
 
 <div align="center">
-  <img src="assets/results/detect_bus.jpg" width="32%">
-  <img src="assets/results/segment_bus.jpg" width="32%">
-  <img src="assets/results/pose_bus.jpg" width="32%">
-  <p><em>YOLO26 检测 · YOLO26 分割 · YOLO26 姿态估计 —— 均为本框架在 bus.jpg 上的实际推演输出</em></p>
+  <img src="assets/results/detect_bus.jpg" width="24%">
+  <img src="assets/results/segment_bus.jpg" width="24%">
+  <img src="assets/results/pose_bus.jpg" width="24%">
+  <img src="assets/results/sem_bus.jpg" width="24%">
+  <p><em>YOLO26 检测 · 分割 · 姿态估计 · 语义分割 —— 均为本框架在 bus.jpg 上的实际推演输出</em></p>
 </div>
 
 ## ✨ 特性
 
 - 🧩 **模型覆盖广**：YOLOv5 / YOLOX / YOLOv8 / YOLOv11 / YOLO26 / PPYOLOE，每种格式一个 `Decoder` 子类，互不干扰
-- 🚀 **多任务统一接口**：检测 / 分割 / 姿态 / 旋转框共用一条管线，返回 `std::variant`，无 `dynamic_cast`
+- 🚀 **多任务统一接口**：检测 / 分割 / 姿态 / 旋转框 / 语义分割共用一条管线，返回 `std::variant`，无 `dynamic_cast`
 - ⚡ **EP 即插即用**：CUDA / TensorRT / OpenVINO / ROCm / MIGraphX / VitisAI / QNN / CoreML / XNNPACK… 换 EP 只改一个参数，**不需要重新编译**（EP 动态库由 onnxruntime 运行时加载）
 - 🧪 **可验证的准确性**：`tools/` 提供与 ultralytics / onnxruntime 参考实现逐框比对的工具链，精度问题用数字说话而不是肉眼看图
 - 🪶 **零隐藏依赖**：对外仅两个头文件（`yolo_onnx.hpp` + `yolo_onnx_types.hpp`），后端/前后处理全在 `src/` 内部
@@ -72,7 +73,7 @@ mkdir build && cd build
 cmake .. -DWITH_EXAMPLES=ON -DWITH_TESTS=ON
 make -j$(nproc)
 
-./tests/test_yolo        # 70 个单元测试
+./tests/test_yolo        # 84 个单元测试
 ```
 
 CMake 选项（默认全关）：
@@ -99,6 +100,9 @@ CMake 选项（默认全关）：
 
 # 姿态估计
 ./examples/pose_image v26 ../assets/models/yolo26s-pose.onnx ../assets/images/bus.jpg out.jpg --ep=cuda
+
+# 语义分割（输出类别 id 图，按 ultralytics 调色板着色，可加图例）
+./examples/sem_image v26 ../assets/models/yolo26s-sem.onnx ../assets/images/bus.jpg out.jpg --classes=19 --legend
 
 # 调整阈值 / 输入尺寸 / 类别数
 ./examples/detect_image v5 model.onnx in.jpg out.jpg --score=0.25 --nms=0.45 --size=640 --classes=80
@@ -141,9 +145,9 @@ for (const auto& box : det.boxes) {
 }
 ```
 
-### 多任务：分割 / 姿态 / 旋转框
+### 多任务：分割 / 姿态 / 旋转框 / 语义分割
 
-四个任务共用一个 `Model`，结果用 `std::variant` 返回，`std::get_if` 安全提取：
+五个任务共用一个 `Model`，结果用 `std::variant` 返回，`std::get_if` 安全提取：
 
 ```cpp
 auto model = yolo_onnx::create_model(yolo_onnx::ModelType::YOLOv11,
@@ -159,10 +163,12 @@ if (auto* seg = std::get_if<yolo_onnx::SegmentResult>(&result)) {
     // pose->boxes[i].keypoints
 } else if (auto* obb = std::get_if<yolo_onnx::OBBResult>(&result)) {
     // obb->obb_boxes[i] — 旋转框 (cx, cy, w, h, angle)
+} else if (auto* sem = std::get_if<yolo_onnx::SemResult>(&result)) {
+    // sem->mask — 原图尺寸的类别 id 图（每像素一个类别 id，非概率）
 }
 ```
 
-也可用类型化入口：`infer_detect()` / `infer_segment()` / `infer_pose()` / `infer_obb()`。
+也可用类型化入口：`infer_detect()` / `infer_segment()` / `infer_pose()` / `infer_obb()` / `infer_sem()`。
 
 ## 🧠 架构
 
@@ -198,34 +204,15 @@ yolo_onnx
 
 ## 🔌 后端与 Execution Provider
 
-**主线是 ONNX Runtime**：所有硬件加速都通过 EP 实现，编译期不链接任何 EP 库，运行时由 onnxruntime `dlopen` 对应的 `libonnxruntime_providers_*.so`。换 EP 只改一个参数，**不用重新编译**。
+**主线是 ONNX Runtime**：所有硬件加速都通过 EP 实现，编译期不链接任何 EP 库。换 EP 只改一个参数（`--ep=cuda`、`--ep=tensorrt --fp16`、`--ep=openvino` …），同一个二进制**不用重新编译**；EP 不可用时打印原因并**自动回退 CPU**，不会让推理失败。
 
-```bash
---ep=cpu          # 默认
---ep=cuda         # NVIDIA GPU        --device=N 选卡
---ep=tensorrt     # NVIDIA GPU + FP16（--fp16 开启，带 engine 缓存）
---ep=openvino     # Intel CPU/GPU
---ep=qnn          # 高通 QNN
---ep=coreml       # Apple 芯片（macOS/iOS）
---ep=xnnpack      # 移动端 CPU 加速
-```
-
-已验证：**CUDA EP** 与 **TensorRT EP** 在 RTX 4070 Ti SUPER 上跑通，输出与 CPU 逐框对齐（score 差异 ~1e-4，EP 间正常浮点误差）。EP 不可用时打印原因并**自动回退 CPU**，不会让整个推理失败。
-
-> 完整 EP 列表（专用 API vs 通用白名单）、独立运行时后端（OpenVINO / CANN / RKNN）、以及踩过的坑 —— 见 **[src/core/README.md](src/core/README.md)**
+> 完整 EP 列表（专用 API vs 通用白名单）、配置项、独立运行时后端（OpenVINO / CANN / RKNN）以及踩过的坑 —— 见 **[docs/backends.md](docs/backends.md)**
 
 ## 🧪 准确性验证工具
 
-`tools/` 提供数字化的精度校验链路：**dump JSON → 跑参考实现 → 逐框 IoU 比对**。精度问题应该用数字定位，而不是盯着一张标注图猜——本框架历史上定位到的多个 bug（YOLOX 二次 sigmoid、预处理用错、掩码坐标系错位、pose 二次 sigmoid）在看图时**完全不可见**，但在 IoU 数字上极其明显。
+`tools/` 提供数字化的精度校验链路：**dump JSON → 跑参考实现 → 逐框 IoU 比对**——精度问题用数字定位，而不是盯着标注图猜（历史上多个解码 bug 在图上完全不可见，在 IoU 数字上极其明显）。
 
-```bash
-./tools/dump_json v11 detect ../assets/models/yolo11n.onnx ../assets/images/bus.jpg out/cpp/bus.json
-python3 tools/ref_onnx.py --model ../assets/models/yolo11n.onnx --task detect \
-        --image ../assets/images/bus.jpg --out out/ref/bus.json
-python3 tools/compare.py --cpp out/cpp/bus.json --ref out/ref/bus.json --iou 0.5
-```
-
-> 各脚本用法、掩码校验（`check_masks_ul.py`）、预处理扫描、历史 bug 复盘 —— 见 **[tools/README.md](tools/README.md)**
+> 三步上手示例、各脚本用法、掩码校验（`check_masks_ul.py`）、预处理扫描、历史 bug 复盘 —— 见 **[docs/accuracy.md](docs/accuracy.md)**
 
 ## 🧱 扩展
 
@@ -257,15 +244,15 @@ yolo-onnx/
 │   │   ├── preprocess/               #   letterbox + NCHW 打包
 │   │   └── postprocess/
 │   │       ├── postprocess_core.hpp  #   零依赖自由函数（nms/iou/restore_*）
-│   │       ├── detect/segment/pose/obb.cpp
+│   │       ├── detect/segment/pose/obb/sem.cpp
 │   │       └── decoder/              #   按输出格式组织的各版本解码器
 │   ├── model.cpp                  # 单一 Model 类（PIMPL）
 │   └── model_impl.hpp
-├── examples/                     # detect / segment / pose / obb 命令行示例
-├── tools/                        # 精度验证工具链（见 tools/README.md）
-├── tests/test_yolo.cpp           # 70 个单元测试
+├── examples/                     # detect / segment / pose / obb / sem 命令行示例
+├── tools/                        # 精度验证工具链（用法见 docs/accuracy.md）
+├── tests/test_yolo.cpp           # 84 个单元测试
 ├── cmake/FindONNXRuntime.cmake
-├── docs/extending.md             # 扩展指南
+├── docs/                         # extending.md（扩展）· backends.md（EP）· accuracy.md（精度校验）
 └── assets/                       # 示例模型与图片
 ```
 
@@ -275,11 +262,10 @@ yolo-onnx/
 
 | 文档 | 内容 |
 |------|------|
-| **[tools/README.md](tools/README.md)** | 精度验证工具链：dump_json / ref_onnx / compare / 掩码校验 / 预处理扫描 + 历史 bug 复盘 |
-| **[src/core/README.md](src/core/README.md)** | 后端与 EP：完整 EP 列表、专用 API vs 通用白名单、独立运行时后端、踩过的坑 |
+| **[docs/accuracy.md](docs/accuracy.md)** | 精度验证工具链：dump_json / ref_onnx / compare / 掩码校验 / 预处理扫描 + 历史 bug 复盘 |
+| **[docs/backends.md](docs/backends.md)** | 后端与 EP：完整 EP 列表、专用 API vs 通用白名单、独立运行时后端、踩过的坑 |
 | **[docs/extending.md](docs/extending.md)** | 扩展指南：四条轴的完整步骤、接口签名、Decoder 契约 |
 | **[python/README.md](python/README.md)** | Python 绑定：构建、用法、导出的 API |
-| [AGENTS.md](AGENTS.md) | 面向 AI 助手 / 维护者的架构约定与历史踩坑记录 |
 
 ## License
 

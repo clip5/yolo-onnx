@@ -190,6 +190,12 @@ OBBResult Model::infer_obb(const cv::Mat& image) {
     return OBBResult{};
 }
 
+SemResult Model::infer_sem(const cv::Mat& image) {
+    auto r = impl_->run_pipeline(image, config_);
+    if (auto* s = std::get_if<SemResult>(&r)) return *s;
+    return SemResult{};
+}
+
 // ============================================================
 // Model Factory
 // ============================================================

@@ -11,4 +11,7 @@ target_link_libraries(pose_image yolo_onnx ${OpenCV_LIBS} ${ONNXRUNTIME_LIBRARIE
 add_executable(obb_image obb_image.cpp)
 target_link_libraries(obb_image yolo_onnx ${OpenCV_LIBS} ${ONNXRUNTIME_LIBRARIES})
 
-install(TARGETS detect_image segment_image pose_image obb_image DESTINATION bin)
+add_executable(sem_image sem_image.cpp)
+target_link_libraries(sem_image yolo_onnx ${OpenCV_LIBS} ${ONNXRUNTIME_LIBRARIES})
+
+install(TARGETS detect_image segment_image pose_image obb_image sem_image DESTINATION bin)

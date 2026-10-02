@@ -42,6 +42,7 @@ enum class TaskType {
     Segment  = 1,   // Instance segmentation
     Pose     = 2,   // Pose/keypoint estimation
     OBB      = 3,   // Oriented bounding box
+    Sem      = 4,   // Semantic segmentation
 };
 
 inline const char* task_type_name(TaskType type) {
@@ -50,6 +51,7 @@ inline const char* task_type_name(TaskType type) {
         case TaskType::Segment:  return "segment";
         case TaskType::Pose:     return "pose";
         case TaskType::OBB:      return "obb";
+        case TaskType::Sem:      return "sem";
         default:                 return "unknown";
     }
 }
@@ -165,10 +167,17 @@ struct OBBResult {
     OBBBoxArray obb_boxes;
 };
 
+/// 语义分割：每个像素一个类别 id（无实例区分）
+/// mask.data[i] 直接存类别 id（0..num_classes-1），不是概率——模型输出
+/// 本身就是 Resize→ArgMax 后的类别图，取 argmax 这一步已在图内完成。
+struct SemResult {
+    Mask mask;   // 原图尺寸；data[y*width+x] = 类别 id
+};
+
 // ============================================================
 // Unified inference result variant (supports all task types)
 // ============================================================
-using InferResult = std::variant<DetectResult, SegmentResult, PoseResult, OBBResult>;
+using InferResult = std::variant<DetectResult, SegmentResult, PoseResult, OBBResult, SemResult>;
 
 // ============================================================
 // Letterbox transform info (for mapping back to original image)

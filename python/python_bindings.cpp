@@ -53,6 +53,7 @@ PYBIND11_MODULE(yolo_onnx_py, m) {
         .value("Segment",  yo::TaskType::Segment)
         .value("Pose",     yo::TaskType::Pose)
         .value("OBB",      yo::TaskType::OBB)
+        .value("Sem",      yo::TaskType::Sem)
         .export_values();
 
     // ---- Data types ----
@@ -167,6 +168,14 @@ PYBIND11_MODULE(yolo_onnx_py, m) {
             return "<OBBResult " + std::to_string(r.obb_boxes.size()) + " obb_boxes>";
         });
 
+    py::class_<yo::SemResult>(m, "SemResult")
+        .def(py::init<>())
+        .def_readwrite("mask", &yo::SemResult::mask)
+        .def("__repr__", [](const yo::SemResult& r) {
+            return "<SemResult " + std::to_string(r.mask.width) + "x" +
+                   std::to_string(r.mask.height) + " class-id map>";
+        });
+
     // ---- Model::Config ----
     py::class_<yo::Model::Config>(m, "ModelConfig")
         .def(py::init<>())
@@ -188,7 +197,7 @@ PYBIND11_MODULE(yolo_onnx_py, m) {
         });
 
     // ---- Model base class ----
-    // 模型不再按版本派生子类：detect/segment/pose/obb 全部由同一个 Model 承担，
+    // 模型不再按版本派生子类：detect/segment/pose/obb/sem 全部由同一个 Model 承担，
     // 任务差异由 config_.task_type 决定，入口按返回类型区分。
     py::class_<yo::Model, std::shared_ptr<yo::Model>>(m, "Model")
         .def(py::init<>())
@@ -243,14 +252,25 @@ PYBIND11_MODULE(yolo_onnx_py, m) {
                 throw std::runtime_error("Failed to load image: " + path);
             }
             return self.infer_obb(mat);
-        }, py::arg("path"), "Run OBB inference on an image file");
+        }, py::arg("path"), "Run OBB inference on an image file")
+        .def("infer_sem", [](yo::Model& self,
+                             py::array_t<uint8_t, py::array::c_style | py::array::forcecast> img) {
+            return self.infer_sem(numpy_to_cvmat(img));
+        }, py::arg("image"), "Run semantic segmentation inference, returns SemResult")
+        .def("infer_sem_file", [](yo::Model& self, const std::string& path) {
+            cv::Mat mat = cv::imread(path);
+            if (mat.empty()) {
+                throw std::runtime_error("Failed to load image: " + path);
+            }
+            return self.infer_sem(mat);
+        }, py::arg("path"), "Run semantic segmentation inference on an image file");
 
     // ---- Factory functions ----
     m.def("create_model", py::overload_cast<yo::ModelType>(&yo::create_model),
           py::arg("type"), "Create a detection model by type");
     m.def("create_model", py::overload_cast<yo::ModelType, yo::TaskType>(&yo::create_model),
           py::arg("type"), py::arg("task"),
-          "Create a model by type and task (detect/segment/pose/obb)");
+          "Create a model by type and task (detect/segment/pose/obb/sem)");
 
     // ---- Utility functions ----
     m.def("model_type_name", &yo::model_type_name, py::arg("type"),

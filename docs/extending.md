@@ -95,7 +95,7 @@ detect_pipeline / obb_pipeline / select_indices    // 一步到位组合
 
 ## 轴二：新的任务
 
-**场景**：加一个现有四任务之外的任务，比如分类。
+**场景**：加一个现有五任务之外的任务，比如分类。
 
 1. 在 `src/process/postprocess/<task>.cpp` 实现 `PostProcess` 子类：
 
@@ -114,7 +114,8 @@ public:
 
 ```cpp
 using InferResult = std::variant<DetectResult, SegmentResult,
-                                 PoseResult, OBBResult, ClassifyResult>;
+                                 PoseResult, OBBResult, SemResult,
+                                 ClassifyResult>;
 ```
 
 5. 想让调用方拿到非 variant 的类型，加一个类型化入口：
@@ -125,9 +126,14 @@ ClassifyResult Model::infer_classify(const cv::Mat& image);
 
 后处理子类**只做任务分派**，具体逻辑复用 `postprocess_core.hpp`，不要重复实现 NMS / 坐标还原。
 
+> **稠密任务（语义分割）是个例外**：它没有候选框，因此不经过 Decoder，也没有
+> NMS / 置信度过滤 / `top_k`——`PostProcessSem` 只做「按 letterbox 裁 padding +
+> 最近邻缩放到原图」两步。类别 id **必须**用最近邻缩放，双线性会在类别边界
+> 插出根本不存在的 id（见 [`sem.cpp`](../src/process/postprocess/sem.cpp)）。
+
 ## 轴三：新的后端 / EP
 
-分两种情况，详见 [`src/core/README.md`](../src/core/README.md)。
+分两种情况，详见 [`docs/backends.md`](backends.md)。
 
 ### (a) 能表达成 ONNX Runtime 的 EP（主流情况）
 
@@ -186,7 +192,7 @@ PreProcessParams PreProcessParams::for_model(ModelType type, int width, int heig
 | `mean` / `std` | 每通道归一化，**在 scale 之后**应用：`(v*scale - mean) / std` |
 | `align` | padding 对齐：`Center` / `TopLeft` 等 |
 
-> **模型检出率明显偏低时，先怀疑预处理，再怀疑权重。** 用 [`tools/yolox_pp_sweep.py`](../tools/README.md#yolox_pp_sweeppy) 扫描「对齐方式 × 通道序 × 归一化」组合，拿一个已知表现良好的检测器当基准打分。YOLOX 就是这么定位的：官方预处理是 top-left 对齐 + 保留 0-255 + 无归一化，用默认值会让 bus.jpg 的检出从 5/5 掉到 2/5。
+> **模型检出率明显偏低时，先怀疑预处理，再怀疑权重。** 用 [`tools/yolox_pp_sweep.py`](accuracy.md#yolox_pp_sweeppy) 扫描「对齐方式 × 通道序 × 归一化」组合，拿一个已知表现良好的检测器当基准打分。YOLOX 就是这么定位的：官方预处理是 top-left 对齐 + 保留 0-255 + 无归一化，用默认值会让 bus.jpg 的检出从 5/5 掉到 2/5。
 
 ## 改完怎么验证
 
@@ -194,7 +200,7 @@ PreProcessParams PreProcessParams::for_model(ModelType type, int width, int heig
 cd build && make -j$(nproc) && ./tests/test_yolo     # 回归测试
 ```
 
-新增的导出格式建议同时加一条**结构性**回归测试——用构造的张量断言解码结果，而不是依赖某个权重文件。同时用 [`tools/`](../tools/README.md) 的比对链路确认精度：
+新增的导出格式建议同时加一条**结构性**回归测试——用构造的张量断言解码结果，而不是依赖某个权重文件。同时用 [`tools/`](accuracy.md) 的比对链路确认精度：
 
 ```bash
 ./tools/dump_json <type> detect model.onnx bus.jpg out/cpp/bus.json

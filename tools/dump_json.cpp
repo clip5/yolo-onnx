@@ -52,6 +52,7 @@ TaskType parse_task_type(const std::string& s) {
     if (s == "segment") return TaskType::Segment;
     if (s == "pose")    return TaskType::Pose;
     if (s == "obb")     return TaskType::OBB;
+    if (s == "sem")     return TaskType::Sem;
     return TaskType::Detect;
 }
 
@@ -208,6 +209,29 @@ int main(int argc, char** argv) {
                << ",\"label\":" << b.label << "}";
         }
         os << (obb->obb_boxes.empty() ? "" : "\n") << "]\n";
+    } else if (const auto* sem = std::get_if<SemResult>(&r)) {
+        os << "\"sem_shape\":[" << sem->mask.width << "," << sem->mask.height << "],\n";
+        // 类别 id 图：逐像素一个整数。用 RLE 压缩，避免 1024x1024 写成几 MB JSON。
+        // 每行一个 run: [起始列, 类别id, 连续长度]
+        os << "\"sem_rle\":[";
+        for (int y = 0; y < sem->mask.height; y++) {
+            const float* row = sem->mask.data.data() + (size_t)y * sem->mask.width;
+            if (y) os << ",";
+            os << "\n[";
+            int x = 0;
+            bool first_run = true;
+            while (x < sem->mask.width) {
+                const int cls = (int)row[x];
+                int run = 1;
+                while (x + run < sem->mask.width && (int)row[x + run] == cls) run++;
+                if (!first_run) os << ",";
+                first_run = false;
+                os << "[" << x << "," << cls << "," << run << "]";
+                x += run;
+            }
+            os << "]";
+        }
+        os << (sem->mask.height ? "\n" : "") << "]\n";
     } else {
         os << "\"boxes\":[],\n\"note\":\"unsupported task type\"\n";
     }

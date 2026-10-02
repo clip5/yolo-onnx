@@ -222,8 +222,22 @@ V8Decoder::decode_pose(const TensorSet& out, const DecodeContext& ctx) const {
 }
 
 // ============================================================
-// obb：解出旋转框，通道位置 4 为角度
+// obb：解出旋转框
 // ============================================================
+// 标准导出布局 [1, 4+nc+1, N]：
+//   ch 0..3      cx,cy,w,h  —— 像素坐标（图内已解码，DFL/dist2rbox 都在图里）
+//   ch 4..4+nc-1 类分数      —— 已 sigmoid
+//   ch 4+nc     角度         —— **弧度**，图内已做完 (sigmoid(x)-0.25)*pi
+//
+// 旧实现把角度当成 ch4、类分数从 ch5 读，并对二者又各套了一次 sigmoid：
+//   ① 通道错位一格，角度读到的其实是 0 号类的分数（恒为 (0,1) 内的低值）；
+//   ② 对已激活的角度再 sigmoid*pi，角度被压到 (0,pi) 而非官方 [-pi/4,3pi/4)；
+//   ③ 类分数二次 sigmoid，背景格被抬到≈0.5。
+// 这里按实际通道数反推布局：类分数在 4 之后，角度在**最后一个**通道。
+// 实测 yolo26s-obb（[1,20,21504]，nc=15）：角度原样读出即与 ultralytics
+// 报告的 r 一致（0.0970 vs 0.0971），无需任何激活。
+//
+// 另支持 DFL 分布分支布局 [1, 4*reg_max+nc+1, N]（框需自行做 softmax 期望）。
 OBBBoxArray V8Decoder::decode_obb(const TensorSet& out, const DecodeContext& ctx) const {
     OBBBoxArray candidates;
     const float* data = out.data(0);
@@ -231,16 +245,24 @@ OBBBoxArray V8Decoder::decode_obb(const TensorSet& out, const DecodeContext& ctx
 
     const int num_classes   = ctx.num_classes;
     const float score_thresh = ctx.score_thresh;
-    constexpr int angle_pos = 4;
-    const int cls_start     = 5;   // 角度固定在位置 4，类分数从5 开始
+    const int cls_start     = 4;
+    constexpr int kAngleTail = 1;   // 角度固定在最后一个通道
 
     const auto& shape = out.shape(0);
     if (shape.size() < 3) return candidates;
-    if ((int)shape[1] < cls_start + num_classes) {
-        std::cerr << "[V8Decoder:obb] channels " << (int)shape[1]
-                  << " < required " << (cls_start + num_classes) << std::endl;
+
+    const int channels = (int)shape[1];
+    const int min_channels = cls_start + num_classes + kAngleTail;
+    if (channels < min_channels) {
+        std::cerr << "[V8Decoder:obb] channels " << channels
+                  << " < required " << min_channels << std::endl;
         return candidates;
     }
+
+    // 通道数远超 4+nc+1 时，视为带 reg_max*4 分布分支（与 detect 同一判定）
+    const bool has_dfl = channels > min_channels + 32;
+    const int reg_max  = has_dfl ? (channels - num_classes - kAngleTail) / 4 : 0;
+    const int angle_ch = channels - kAngleTail;
 
     const bool is_chw = (shape.size() == 4);
 
@@ -248,33 +270,49 @@ OBBBoxArray V8Decoder::decode_obb(const TensorSet& out, const DecodeContext& ctx
         float max_cls = 0.0f;
         int max_cls_id = -1;
         for (int c = 0; c < num_classes; c++) {
-            const float cls = sigmoid(channel_at(data, cs, cls_start + c, idx));
+            const float cls = maybe_sigmoid(channel_at(data, cs, cls_start + c, idx));
             if (cls > max_cls) { max_cls = cls; max_cls_id = c; }
         }
         if (max_cls < score_thresh) return;
 
-        const float cx = channel_at(data, cs, 0, idx);
-        const float cy = channel_at(data, cs, 1, idx);
-        const float bw = channel_at(data, cs, 2, idx);
-        const float bh = channel_at(data, cs, 3, idx);
-        const float angle = sigmoid(channel_at(data, cs, angle_pos, idx)) * CV_PI;
+        const float angle_raw = channel_at(data, cs, angle_ch, idx);
 
         float bx, by, box_w, box_h;
-        if (is_chw) {
-            bx    = (sigmoid(cx) + gi) * stride;
-            by    = (sigmoid(cy) + gj) * stride;
-            box_w = bw * stride;
-            box_h = bh * stride;
-        } else if (cx >= 0.0f && cx <= 1.0f && cy >= 0.0f && cy <= 1.0f) {
-            // 3D 导出为 [0,1] 归一化 logit
-            bx    = (sigmoid(cx) + gi) * stride;
-            by    = (sigmoid(cy) + gj) * stride;
-            box_w = bw * stride;
-            box_h = bh * stride;
+        if (has_dfl) {
+            // DFL：每条边对 reg_max 个 logit 做 softmax，期望值即该边偏移（单位：格）
+            float dfl_val[4] = {0, 0, 0, 0};
+            for (int s = 0; s < 4; s++) {
+                const float* logits = data + (size_t)(s * reg_max) * cs + idx;
+                float sum_exp = 0.0f;
+                for (int i = 0; i < reg_max; i++) sum_exp += std::exp(logits[i]);
+                if (sum_exp > 0.0f) {
+                    for (int i = 0; i < reg_max; i++) {
+                        dfl_val[s] += (std::exp(logits[i]) / sum_exp) * i;
+                    }
+                }
+            }
+            bx    = (gi + 0.5f) * stride;
+            by    = (gj + 0.5f) * stride;
+            box_w = (dfl_val[0] + dfl_val[2]) * stride;
+            box_h = (dfl_val[1] + dfl_val[3]) * stride;
+        } else if (is_chw) {
+            // 4D 网格空间 logit：需 sigmoid + 网格偏移
+            bx    = (sigmoid(channel_at(data, cs, 0, idx)) + gi) * stride;
+            by    = (sigmoid(channel_at(data, cs, 1, idx)) + gj) * stride;
+            box_w = channel_at(data, cs, 2, idx) * stride;
+            box_h = channel_at(data, cs, 3, idx) * stride;
         } else {
             // 3D 导出已是像素坐标
-            bx = cx; by = cy; box_w = bw; box_h = bh;
+            bx    = channel_at(data, cs, 0, idx);
+            by    = channel_at(data, cs, 1, idx);
+            box_w = channel_at(data, cs, 2, idx);
+            box_h = channel_at(data, cs, 3, idx);
         }
+
+        // 3D 导出的角度已是弧度，原样使用；仅 4D 网格空间需要补官方激活，
+        // 且 OBB26 的角度是原始 logit（(sigmoid(x)-0.25)*pi），不是 OBB 的 sigmoid*pi。
+        const float angle = is_chw ? (sigmoid(angle_raw) - 0.25f) * CV_PI
+                                    : angle_raw;
 
         candidates.emplace_back(bx, by, box_w, box_h, angle, max_cls, max_cls_id);
     });

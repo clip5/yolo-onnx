@@ -1,6 +1,6 @@
 # 准确性验证工具链
 
-本目录是框架的**精度校验工具**。精度问题应该用数字定位，而不是盯着一张标注图猜——本框架历史上定位到的多个 bug（YOLOX 二次 sigmoid、YOLOX 预处理用错、分割掩码坐标系错位、pose 二次 sigmoid）在看图时**完全不可见**，但在 IoU 数字上极其明显。
+`tools/` 目录是框架的**精度校验工具**。精度问题应该用数字定位，而不是盯着一张标注图猜——本框架历史上定位到的多个 bug（YOLOX 二次 sigmoid、YOLOX 预处理用错、分割掩码坐标系错位、pose 二次 sigmoid）在看图时**完全不可见**，但在 IoU 数字上极其明显。
 
 ## 📑 目录
 
@@ -75,7 +75,7 @@ flowchart LR
 | 参数 | 取值 |
 |------|------|
 | `model_type` | `v5` / `yolox` / `v8` / `v11` / `v26` / `ppyoloe` |
-| `task` | `detect` / `segment` / `pose` / `obb` |
+| `task` | `detect` / `segment` / `pose` / `obb` / `sem` |
 | `--size=WxH` | 输入尺寸，**省略则用模型自身的形状**（固定 shape 导出必须省略） |
 | `--score=` `--nms=` `--classes=` `--threads=` | 阈值 / 类别数 / 线程数 |
 | `--nms-mode=class\|agnostic` | NMS 策略，默认 `class` |

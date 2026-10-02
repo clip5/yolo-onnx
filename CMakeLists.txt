@@ -41,6 +41,7 @@ set(YOLO_ONNX_SOURCES
     src/process/postprocess/segment.cpp
     src/process/postprocess/pose.cpp
     src/process/postprocess/obb.cpp
+    src/process/postprocess/sem.cpp
     src/process/postprocess/postprocess_factory.cpp
     src/process/postprocess/decoder/decoder_v5.cpp
     src/process/postprocess/decoder/decoder_yolox.cpp

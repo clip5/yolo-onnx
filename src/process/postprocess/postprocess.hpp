@@ -91,6 +91,25 @@ public:
     InferResult forward(const TensorSet& outputs, const LetterboxInfo& lb) const override;
 };
 
+/// 语义分割：类别图 → 还原到原图尺寸
+///
+/// 与前四个任务的结构性差异：语义分割**没有候选框**，因此不走 Decoder，
+/// 也没有 NMS/置信度过滤。模型输出本身就是 [1,H,W] 的类别 id 图
+/// （ultralytics 导出为 Resize→ArgMax→Cast(uint8)），argmax 已在图内完成。
+/// 后处理只剩两件事：
+///   1) 把 [H,W] 类别图按 letterbox 逆映射裁剪 padding，再缩放到原图尺寸
+///   2) 存成 SemResult::mask（每像素一个类别 id）
+class PostProcessSem : public PostProcess {
+public:
+    using PostProcess::PostProcess;
+
+    InferResult forward(const TensorSet& outputs, const LetterboxInfo& lb) const override;
+
+    /// 定位类别图张量：取元素数最多的那个 3D/4D 输出。
+    /// 语义分割模型通常只有这一个输出；保留该搜索是为了容忍额外的小张量输出。
+    static int find_classmap_index(const TensorSet& outputs);
+};
+
 /// 按任务 + 模型类型创建后处理器（自动装配好对应 Decoder）
 std::shared_ptr<PostProcess> create_postprocess(TaskType task, ModelType model_type,
                                                 const PostProcessParams& params);

@@ -308,17 +308,64 @@ bool OnnxruntimeBackend::forward(
             auto tensor_info = ort_outputs[i].GetTensorTypeAndShapeInfo();
             outputs.shapes[i] = tensor_info.GetShape();
 
-            if (tensor_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-                std::cerr << "[OnnxruntimeBackend] Unsupported output type: "
-                          << tensor_info.GetElementType() << std::endl;
-                return false;
+            const size_t total_elements = tensor_info.GetElementCount();
+            cv::Mat dst(1, (int)total_elements, CV_32F);
+            float* out_ptr = dst.ptr<float>();
+
+            // TensorSet 统一以 float32 承载。对整型输出（如语义分割头
+            // Resize→ArgMax→Cast 后的 uint8/int32 类别图）逐元素转换即可——
+            // 类别 id 远小于 2^24，float32 可无损表示。
+            // 旧实现在这里直接拒绝一切非 float 输出，导致 yolo26s-sem
+            // 报 "Unsupported output type: 2"(uint8) 而无法推理。
+            switch (tensor_info.GetElementType()) {
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT: {
+                    std::memcpy(out_ptr, ort_outputs[i].GetTensorData<float>(),
+                                total_elements * sizeof(float));
+                    break;
+                }
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT8: {
+                    const uint8_t* src = ort_outputs[i].GetTensorData<uint8_t>();
+                    for (size_t k = 0; k < total_elements; k++) out_ptr[k] = (float)src[k];
+                    break;
+                }
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT8: {
+                    const int8_t* src = ort_outputs[i].GetTensorData<int8_t>();
+                    for (size_t k = 0; k < total_elements; k++) out_ptr[k] = (float)src[k];
+                    break;
+                }
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_UINT16: {
+                    const uint16_t* src = ort_outputs[i].GetTensorData<uint16_t>();
+                    for (size_t k = 0; k < total_elements; k++) out_ptr[k] = (float)src[k];
+                    break;
+                }
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT16: {
+                    const int16_t* src = ort_outputs[i].GetTensorData<int16_t>();
+                    for (size_t k = 0; k < total_elements; k++) out_ptr[k] = (float)src[k];
+                    break;
+                }
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT32: {
+                    const int32_t* src = ort_outputs[i].GetTensorData<int32_t>();
+                    for (size_t k = 0; k < total_elements; k++) out_ptr[k] = (float)src[k];
+                    break;
+                }
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64: {
+                    const int64_t* src = ort_outputs[i].GetTensorData<int64_t>();
+                    for (size_t k = 0; k < total_elements; k++) out_ptr[k] = (float)src[k];
+                    break;
+                }
+                case ONNX_TENSOR_ELEMENT_DATA_TYPE_BOOL: {
+                    const bool* src = ort_outputs[i].GetTensorData<bool>();
+                    for (size_t k = 0; k < total_elements; k++) out_ptr[k] = src[k] ? 1.0f : 0.0f;
+                    break;
+                }
+                default: {
+                    std::cerr << "[OnnxruntimeBackend] Unsupported output type: "
+                              << tensor_info.GetElementType() << std::endl;
+                    return false;
+                }
             }
 
-            size_t total_elements = tensor_info.GetElementCount();
-            outputs.datas[i] = cv::Mat(1, (int)total_elements, CV_32F);
-            std::memcpy(outputs.datas[i].ptr<float>(),
-                        ort_outputs[i].GetTensorData<float>(),
-                        total_elements * sizeof(float));
+            outputs.datas[i] = std::move(dst);
         }
 
         return true;

@@ -94,6 +94,7 @@ public:
     SegmentResult infer_segment(const cv::Mat& image);
     PoseResult    infer_pose(const cv::Mat& image);
     OBBResult     infer_obb(const cv::Mat& image);
+    SemResult     infer_sem(const cv::Mat& image);
 
     /// 由工厂设置模型类型与任务类型（load 之前调用）
     void set_model_task(ModelType type, TaskType task);
