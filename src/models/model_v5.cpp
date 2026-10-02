@@ -51,13 +51,48 @@ BoxArray ModelV5::decode_output(
     const std::vector<std::vector<int64_t>>& output_shapes
 ) const {
     BoxArray boxes;
-    if (output_data.size() != 3) {
-        std::cerr << "[ModelV5] Expected 3 outputs, got " << output_data.size() << std::endl;
+    int num_classes = config_.num_classes;
+    float score_thresh = config_.score_thresh;
+    // Case 1: Single concatenated output [1, 25200, 5+C] from ultralytics
+    // export — anchors flattened and box values already decoded to pixels,
+    // obj/class scores already sigmoid'd.
+    if (output_data.size() == 1) {
+        const auto& data = output_data[0];
+        const auto& shape = output_shapes[0];
+        if (shape.size() != 3 || (int)shape[2] != 5 + num_classes) {
+            std::cerr << "[ModelV5] Unexpected single output shape" << std::endl;
+            return boxes;
+        }
+        int num_boxes = (int)shape[1];
+        int bbox_ch = 5 + num_classes;
+
+        for (int i = 0; i < num_boxes; i++) {
+            const float* row = &data[(size_t)i * bbox_ch];
+            float obj = row[4];
+            float max_cls = 0.0f;
+            int max_cls_id = -1;
+            for (int c = 0; c < num_classes; c++) {
+                if (row[5 + c] > max_cls) {
+                    max_cls = row[5 + c];
+                    max_cls_id = c;
+                }
+            }
+            float score = obj * max_cls;
+            if (max_cls_id < 0 || score < score_thresh) continue;
+
+            float cx = row[0], cy = row[1], bw = row[2], bh = row[3];
+            boxes.emplace_back(cx - bw / 2.0f, cy - bh / 2.0f,
+                               cx + bw / 2.0f, cy + bh / 2.0f,
+                               score, max_cls_id);
+        }
         return boxes;
     }
 
-    int num_classes = config_.num_classes;
-    float score_thresh = config_.score_thresh;
+    // Case 2: raw per-level outputs [1, 3*(5+C), H, W]
+    if (output_data.size() != 3) {
+        std::cerr << "[ModelV5] Expected 1 or 3 outputs, got " << output_data.size() << std::endl;
+        return boxes;
+    }
 
     // Process each of the 3 output scales (strides 8, 16, 32)
     for (int level = 0; level < 3; level++) {

@@ -89,14 +89,16 @@ BoxArray ModelV8::decode_output(
 
             for (int g = 0; g < grid_counts[level]; g++) {
                 int idx = grid_offset + g;
-                int gi = idx % grid_w;
-                int gj = idx / grid_w;
+                int gi = g % grid_w;
+                int gj = g / grid_w;
 
-                // Class scores (need sigmoid)
+                // Class scores. Already-decoded exports have sigmoid applied,
+                // raw (DFL-less custom) exports may not; detect by range.
                 float max_cls = 0.0f;
                 int max_cls_id = -1;
                 for (int c = 0; c < num_classes; c++) {
-                    float cls = sigmoid(data[(cls_start + c) * num_boxes + idx]);
+                    float raw = data[(cls_start + c) * num_boxes + idx];
+                    float cls = (raw >= 0.0f && raw <= 1.0f) ? raw : sigmoid(raw);
                     if (cls > max_cls) {
                         max_cls = cls;
                         max_cls_id = c;
@@ -130,27 +132,12 @@ BoxArray ModelV8::decode_output(
                     bw = (dfl_val[0] + dfl_val[2]) * stride;
                     bh = (dfl_val[1] + dfl_val[3]) * stride;
                 } else {
-                    // Direct decode: cx, cy, w, h in grid space
+                    // Already-decoded export (ultralytics): cx, cy, w, h in
+                    // input-image pixels, class scores already sigmoid'd.
                     cx = data[0 * num_boxes + idx];
                     cy = data[1 * num_boxes + idx];
                     bw = data[2 * num_boxes + idx];
                     bh = data[3 * num_boxes + idx];
-
-                    // The values might be raw (need sigmoid + grid offset) or already decoded
-                    // Check if they are in reasonable range (0-1 vs 0-640)
-                    if (cx >= 0.0f && cx <= 1.0f && cy >= 0.0f && cy <= 1.0f) {
-                        // Raw values: need to decode
-                        cx = (sigmoid(cx) + gi) * stride;
-                        cy = (sigmoid(cy) + gj) * stride;
-                        bw = bw * stride;  // might need exp(bw) * stride
-                        bh = bh * stride;
-                    } else {
-                        // Already decoded, just scale by stride
-                        cx = cx * stride;
-                        cy = cy * stride;
-                        bw = bw * stride;
-                        bh = bh * stride;
-                    }
                 }
 
                 float x1 = cx - bw / 2.0f;

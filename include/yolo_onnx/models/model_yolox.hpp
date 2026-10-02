@@ -1,5 +1,5 @@
 #pragma once
-#include "yolo_onnx/model.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 
 namespace yolo_onnx {
 
@@ -9,6 +9,13 @@ class ModelYOLOX : public Model {
 public:
     InferResult infer(const cv::Mat& image) override;
 protected:
+    /// YOLOX expects ImageNet mean/std normalization
+    float normalize_channel(float v, int ch) const override {
+        static const float mean[3] = {0.485f, 0.456f, 0.406f};
+        static const float std_[3] = {0.229f, 0.224f, 0.225f};
+        return (v - mean[ch]) / std_[ch];
+    }
+
     BoxArray decode_output(
         const std::vector<std::vector<float>>&   output_data,
         const std::vector<std::vector<int64_t>>& output_shapes

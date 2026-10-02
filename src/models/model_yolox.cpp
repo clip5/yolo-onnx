@@ -70,8 +70,15 @@ BoxArray ModelYOLOX::decode_output(
             return boxes;
         }
 
-        int channels = (int)shape[1];
-        int num_grids = (int)shape[2];  // 8400 = 80*80 + 40*40 + 20*20
+        // Box-major layout: [1, num_grids, 5+C]
+        // e.g. yolox_s export: [1, 8400, 85], raw values needing decode.
+        int num_grids = (int)shape[1];
+        int channels  = (int)shape[2];
+
+        if (channels != 5 + num_classes) {
+            std::cerr << "[ModelYOLOX] Unexpected channel count: " << channels << std::endl;
+            return boxes;
+        }
 
         // Compute grid offsets for each stride level
         // 80*80 = 6400, 40*40 = 1600, 20*20 = 400
@@ -81,32 +88,23 @@ BoxArray ModelYOLOX::decode_output(
         int grid_offset = 0;
         for (int level = 0; level < 3; level++) {
             int stride = strides_[level];
-            int grid_h = grid_sizes[level];
             int grid_w = grid_sizes[level];
 
             for (int g = 0; g < grid_counts[level]; g++) {
                 int idx = grid_offset + g;
-                int gi = idx % grid_w;
-                int gj = idx / grid_w;
+                int gi = g % grid_w;
+                int gj = g / grid_w;
+
+                const float* row = &data[(size_t)idx * channels];
 
                 // YOLOX: [tx, ty, tw, th, obj, cls0, cls1, ...]
-                float obj = sigmoid(data[4 + idx * channels]);  // NCHW vs NCHW... careful
-
-                // Actually, for concatenated output, the layout is typically:
-                // [batch, channels, num_boxes] = NCHW where num_boxes = total grid cells
-                // So for box i, we access data[0 + i*channels], data[1 + i*channels], etc.
-                // Wait, that's wrong. For NCHW with shape [1, C, N], the layout is:
-                // data[0..N-1] = channel 0, data[N..2N-1] = channel 1, etc.
-                // So for box i, channel c: data[c * N + i]
-
-                float obj_val = data[4 * num_grids + idx];  // obj channel
-                float obj_conf = sigmoid(obj_val);
+                float obj_conf = sigmoid(row[4]);
 
                 // Class scores
                 float max_cls = 0.0f;
                 int max_cls_id = -1;
                 for (int c = 0; c < num_classes; c++) {
-                    float cls = sigmoid(data[(5 + c) * num_grids + idx]);
+                    float cls = sigmoid(row[5 + c]);
                     if (cls > max_cls) {
                         max_cls = cls;
                         max_cls_id = c;
@@ -116,16 +114,11 @@ BoxArray ModelYOLOX::decode_output(
                 float score = obj_conf * max_cls;
                 if (score < score_thresh) continue;
 
-                // Decode box
-                float tx = data[0 * num_grids + idx];
-                float ty = data[1 * num_grids + idx];
-                float tw = data[2 * num_grids + idx];
-                float th = data[3 * num_grids + idx];
-
-                float bx = (sigmoid(tx) + gi) * stride;
-                float by = (sigmoid(ty) + gj) * stride;
-                float bw = std::exp(tw) * stride;
-                float bh = std::exp(th) * stride;
+                // Decode box (YOLOX official formula)
+                float bx = (sigmoid(row[0]) * 2.0f - 0.5f + gi) * stride;
+                float by = (sigmoid(row[1]) * 2.0f - 0.5f + gj) * stride;
+                float bw = std::pow(sigmoid(row[2]) * 2.0f, 2) * stride;
+                float bh = std::pow(sigmoid(row[3]) * 2.0f, 2) * stride;
 
                 float x1 = bx - bw / 2.0f;
                 float y1 = by - bh / 2.0f;
@@ -173,10 +166,11 @@ BoxArray ModelYOLOX::decode_output(
                     float tw = data[2 + h * width + w];
                     float th = data[3 + h * width + w];
 
-                    float bx = (sigmoid(tx) + w) * stride;
-                    float by = (sigmoid(ty) + h) * stride;
-                    float bw = std::exp(tw) * stride;
-                    float bh = std::exp(th) * stride;
+                    // Decode box (YOLOX official formula)
+                    float bx = (sigmoid(tx) * 2.0f - 0.5f + w) * stride;
+                    float by = (sigmoid(ty) * 2.0f - 0.5f + h) * stride;
+                    float bw = std::pow(sigmoid(tw) * 2.0f, 2) * stride;
+                    float bh = std::pow(sigmoid(th) * 2.0f, 2) * stride;
 
                     float x1 = bx - bw / 2.0f;
                     float y1 = by - bh / 2.0f;

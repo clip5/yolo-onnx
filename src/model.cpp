@@ -1,4 +1,4 @@
-#include "yolo_onnx/model.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 #include "yolo_onnx/backends/onnxruntime_backend.hpp"
 #include "yolo_onnx/models/model_v5.hpp"
 #include "yolo_onnx/models/model_yolox.hpp"
@@ -106,8 +106,12 @@ PreProcessResult Model::preprocess(const cv::Mat& image, int target_w, int targe
             for (int w = 0; w < target_w; w++) {
                 // BGR → RGB channel swap
                 int src_c = (config_.model_type == ModelType::PPYOLOE) ? c : (2 - c);
+                float v = canvas.at<cv::Vec3b>(h, w)[src_c] / 255.0f;
+                // ch index in RGB order: for RGB output channel c, ch == c;
+                // for BGR-ordered PPYOLOE, map channel index accordingly.
+                int ch = (config_.model_type == ModelType::PPYOLOE) ? (2 - c) : c;
                 result.blob[c * target_h * target_w + h * target_w + w] =
-                    canvas.at<cv::Vec3b>(h, w)[src_c] / 255.0f;
+                    normalize_channel(v, ch);
             }
         }
     }

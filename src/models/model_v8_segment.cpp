@@ -202,14 +202,16 @@ std::vector<ModelV8Segment::DecodedBox> ModelV8Segment::decode_candidates(
 
             for (int g = 0; g < grid_counts[level]; g++) {
                 int idx = grid_offset + g;
-                int gi = idx % grid_w;
-                int gj = idx / grid_w;
+                int gi = g % grid_w;
+                int gj = g / grid_w;
 
-                // Class scores
+                // Class scores. Already-decoded exports have sigmoid applied;
+                // detect by range.
                 float max_cls = 0.0f;
                 int max_cls_id = -1;
                 for (int c = 0; c < num_classes; c++) {
-                    float cls = sigmoid(data[(cls_start + c) * num_boxes + idx]);
+                    float raw = data[(cls_start + c) * num_boxes + idx];
+                    float cls = (raw >= 0.0f && raw <= 1.0f) ? raw : sigmoid(raw);
                     if (cls > max_cls) {
                         max_cls = cls;
                         max_cls_id = c;
@@ -224,19 +226,12 @@ std::vector<ModelV8Segment::DecodedBox> ModelV8Segment::decode_candidates(
                 float bw = data[2 * num_boxes + idx];
                 float bh = data[3 * num_boxes + idx];
 
-                // Check if values are raw (0-1) or already decoded
-                float bx, by, box_w, box_h;
-                if (cx >= 0.0f && cx <= 1.0f && cy >= 0.0f && cy <= 1.0f) {
-                    bx = (sigmoid(cx) + gi) * stride;
-                    by = (sigmoid(cy) + gj) * stride;
-                    box_w = bw * stride;
-                    box_h = bh * stride;
-                } else {
-                    bx = cx * stride;
-                    by = cy * stride;
-                    box_w = bw * stride;
-                    box_h = bh * stride;
-                }
+                // Already-decoded export (ultralytics): pixel coords,
+                // class scores already sigmoid'd.
+                float bx = cx;
+                float by = cy;
+                float box_w = bw;
+                float box_h = bh;
 
                 float x1 = bx - box_w / 2.0f;
                 float y1 = by - box_h / 2.0f;

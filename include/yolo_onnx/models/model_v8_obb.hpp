@@ -1,5 +1,5 @@
 #pragma once
-#include "yolo_onnx/model.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 
 namespace yolo_onnx {
 

@@ -87,6 +87,11 @@ protected:
     /// Letterbox resize + normalize
     PreProcessResult preprocess(const cv::Mat& image, int target_w, int target_h) const;
 
+    /// Per-channel normalization applied after the default /255 scaling.
+    /// `ch`: 0=R, 1=G, 2=B. Default: identity (values stay in [0,1]).
+    /// Override for models that expect e.g. ImageNet mean/std (YOLOX).
+    virtual float normalize_channel(float v, int ch) const { return v; }
+
     /// Decode model output into candidate boxes (model-specific)
     virtual BoxArray decode_output(
         const std::vector<std::vector<float>>&   output_data,

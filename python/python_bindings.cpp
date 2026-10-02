@@ -2,7 +2,7 @@
 #include <pybind11/stl.h>
 #include <pybind11/numpy.h>
 
-#include "yolo_onnx/model.hpp"
+#include "yolo_onnx/yolo_onnx.hpp"
 #include "yolo_onnx/models/model_v8_segment.hpp"
 #include "yolo_onnx/models/model_v8_pose.hpp"
 #include "yolo_onnx/models/model_v8_obb.hpp"
