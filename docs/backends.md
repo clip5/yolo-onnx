@@ -172,6 +172,36 @@ trt_opts.trt_engine_cache_path = "/tmp";
 
 `OrtOpenVINOProviderOptions::device_id` 是 `const char*`，指向的字符串必须覆盖整个 `AppendExecutionProvider_OpenVINO` 调用周期，不能传临时 `std::to_string(...)` 的结果。
 
+### CoreML EP（macOS / Apple Silicon）
+
+实测环境：Apple Silicon + macOS 27 + `onnxruntime-osx-arm64-1.30.0`，模型 `yolo11n@640`，输入 bus.jpg，**同一进程内 load 一次、infer 40 次**（计时不含 load）：
+
+| 配置 | load | infer 中位数 | p90 |
+|------|------|------------|-----|
+| CPU（4 线程） | 25 ms | 24.6 ms | 28.0 ms |
+| `ep=coreml`（默认 NeuralNetwork 格式） | **4039 ms** | 7.1 ms | 15.3 ms |
+| `ep=coreml;ModelFormat=MLProgram;MLComputeUnits=CPUAndGPU` | 206 ms | **5.3 ms** | 6.1 ms |
+
+精度与 CPU 一致：框最大偏差 1 px，score 差 ±0.005（GPU 走 fp16）。
+
+**怎么确认真的跑在 CoreML 上**（而不是注册成功却回退了）：
+
+```bash
+ORT_LOGGING_LEVEL=3 ./build/examples/detect_image v11 model.onnx bus.jpg out.jpg --ep=coreml 2>&1 | grep -i coreml
+# CoreMLExecutionProvider::GetCapability, number of partitions supported by CoreML: 5
+# number of nodes in the graph: 320 number of nodes supported by CoreML: 315
+```
+
+**三个坑**：
+
+1. **`device_id` 会被 CoreML 拒绝**。白名单分支过去无条件注入 `device_id`，CoreML 报 `Unknown option: device_id` → 注册失败 → **静默回退 CPU**（日志有，容易看漏）。现在只在显式指定非 0 设备时才透传。
+2. **默认 NeuralNetwork 格式每次加载付 ~4 秒编译**，单次推理再快也救不回来（进程短、跑一次就退出的场景反而比 CPU 慢 40 倍）。换 `ModelFormat=MLProgram` 后 load 206 ms、infer 5.3 ms，两头都赢。1.30 **没有**缓存编译产物的 provider option（`ModelListDirectory` 已不被接受，会直接拒绝注册），所以别指望第二次进程变快。
+3. **`MLComputeUnits` 的取值不带前缀**：`CPUOnly` / `CPUAndGPU` / `CPUAndNeuralEngine`。写成 `MLComputeUnitsCPUAndGPU` 会报 `Invalid value for option 'MLComputeUnits'` 并回退 CPU。
+
+**例外：语义分割头不适合 CoreML。** `yolo26s-sem@1024` 在默认 NeuralNetwork 格式下**运行期直接失败**（`Unable to compute the prediction using a neural network model, error code: -1`，注意 load 阶段不报错），换 MLProgram 能出结果但更慢：CPU 121 ms / MLProgram+CPUAndGPU 165 ms / MLProgram 默认(ANE) 767 ms。detect / segment / pose 在 CoreML 下均正常。
+
+> EP 私有选项（`ModelFormat` / `MLComputeUnits` 等）目前只能走 `Config::custom_config`——`examples/` 的命令行只解析 `--ep` / `--device` / `--fp16`。
+
 ### CANN 的 options 类型不完整
 
 ORT 1.23 头文件里没有可用的 `OrtCANNProviderOptions` 定义（有 `AppendExecutionProvider_CANN` 声明但结构体不完整），因此暂未接线。

@@ -254,7 +254,7 @@ yolo-onnx/
 ├── tools/                        # 精度验证工具链（用法见 docs/accuracy.md）
 ├── tests/test_yolo.cpp           # 84 个单元测试
 ├── cmake/FindONNXRuntime.cmake
-├── docs/                         # extending.md（扩展）· backends.md（EP）· accuracy.md（精度校验）
+├── docs/                         # extending.md（扩展）· backends.md（EP）· accuracy.md（精度校验）· macos.md（Mac 部署）
 └── assets/                       # 示例模型与图片
 ```
 
@@ -267,6 +267,7 @@ yolo-onnx/
 | **[docs/accuracy.md](docs/accuracy.md)** | 精度验证工具链：dump_json / ref_onnx / compare / 掩码校验 / 预处理扫描 + 历史 bug 复盘 |
 | **[docs/backends.md](docs/backends.md)** | 后端与 EP：完整 EP 列表、专用 API vs 通用白名单、独立运行时后端、踩过的坑 |
 | **[docs/extending.md](docs/extending.md)** | 扩展指南：四条轴的完整步骤、接口签名、Decoder 契约 |
+| **[docs/macos.md](docs/macos.md)** | macOS (Apple Silicon) 部署：依赖、ONNX Runtime C SDK、OpenCV 4/5、CoreML EP、exFAT 卷 venv 的坑 |
 | **[python/README.md](python/README.md)** | Python 绑定：构建、用法、导出的 API |
 
 ## License

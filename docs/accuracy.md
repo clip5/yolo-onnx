@@ -76,7 +76,7 @@ flowchart LR
 |------|------|
 | `model_type` | `v5` / `yolox` / `v8` / `v11` / `v26` / `ppyoloe` |
 | `task` | `detect` / `segment` / `pose` / `obb` / `sem` |
-| `--size=WxH` | 输入尺寸，**省略则用模型自身的形状**（固定 shape 导出必须省略） |
+| `--size=WxH` | 输入尺寸，**省略则用模型自身的形状**（固定 shape 导出必须省略）；动态 shape 导出读不到具体形状，省略时回落到 `Config` 默认的 640 |
 | `--score=` `--nms=` `--classes=` `--threads=` | 阈值 / 类别数 / 线程数 |
 | `--nms-mode=class\|agnostic` | NMS 策略，默认 `class` |
 
@@ -157,8 +157,9 @@ python3 tools/report.py [--cpp-dir=output/cpp] [--ref-dir=output/ref] \
 ## 前置依赖
 
 ```bash
-pip install onnxruntime numpy opencv-python ultralytics
+pip install onnx onnxruntime numpy opencv-python ultralytics
 ```
 
 - `ultralytics`：可选，`ref_onnx.py` 的基准路径与 `check_masks_ul.py` 需要它
 - `compare.py` / `dump_json` 不依赖 ultralytics
+- **`onnx` 不能省**：`ref_onnx.py` 靠 `import onnx` 读图结构判断 YOLOX 导出是否自带 decoder（`yolox_has_decoder()`）。缺 `onnx` 时异常被吞、直接返回 `False`，于是对"已带 decoder"的导出又套了一遍 grid/stride 解码，产出一堆格子大小的方框——**表现为 C++ 侧 5 框 vs 参考 20 框、IoU 0 的假 FAIL**，看起来像框架的错。判真凭据：图里没有 `Exp`/`Pow`/`Sqrt` 节点才是原始 logit 导出。

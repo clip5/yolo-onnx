@@ -1,6 +1,10 @@
 #include "process/postprocess/postprocess_core.hpp"
 
 #include <opencv2/imgproc.hpp>
+// OpenCV 5 把 contourArea / rotatedRectangleIntersection 从 imgproc 移到了 geometry
+#if CV_VERSION_MAJOR >= 5
+#include <opencv2/geometry.hpp>
+#endif
 
 #include <algorithm>
 #include <map>

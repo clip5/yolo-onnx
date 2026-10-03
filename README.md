@@ -254,7 +254,7 @@ yolo-onnx/
 ├── tools/                        # Accuracy-verification toolchain (see docs/accuracy.md)
 ├── tests/test_yolo.cpp           # 84 unit tests
 ├── cmake/FindONNXRuntime.cmake
-├── docs/                         # extending.md · backends.md · accuracy.md
+├── docs/                         # extending.md · backends.md · accuracy.md · macos.md
 └── assets/                       # Sample models and images
 ```
 
@@ -267,6 +267,7 @@ The main README covers usage only; more detailed reference docs live in their ow
 | **[docs/accuracy.md](docs/accuracy.md)** | Accuracy-validation toolchain: dump_json / ref_onnx / compare / mask validation / preprocessing sweeps + historical bug post-mortems |
 | **[docs/backends.md](docs/backends.md)** | Backends & EPs: full EP list, dedicated-API vs generic whitelist, standalone-runtime backends, pitfalls |
 | **[docs/extending.md](docs/extending.md)** | Extension guide: full steps for all four axes, interface signatures, Decoder contract |
+| **[docs/macos.md](docs/macos.md)** | macOS (Apple Silicon) deployment: dependencies, ONNX Runtime C SDK, OpenCV 4/5, CoreML EP, exFAT venv pitfall |
 | **[python/README.md](python/README.md)** | Python bindings: build, usage, exported API |
 
 ## License

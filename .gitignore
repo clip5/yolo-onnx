@@ -5,3 +5,6 @@ build*
 output
 *.onnx
 *.pyc
+# macOS AppleDouble 伴生文件（exFAT/NTFS 卷上每个文件都会生成一个）
+._*
+.DS_Store

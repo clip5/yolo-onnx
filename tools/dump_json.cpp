@@ -131,12 +131,11 @@ int main(int argc, char** argv) {
     // Only override the model's own input size when explicitly requested.
     // Otherwise Model::load() picks the real input shape from the ONNX file,
     // which is what a fixed-shape export requires anyway.
+    // 动态 shape 导出读不到具体尺寸，此时保留 Config 的默认 640——
+    // 写 -1 会让 letterbox 的 cv::resize 直接断言失败。
     if (size_w > 0 && size_h > 0) {
         cfg.input_width  = size_w;
         cfg.input_height = size_h;
-    } else {
-        cfg.input_width  = -1;
-        cfg.input_height = -1;
     }
 
     if (!model->load(cfg)) { std::cerr << "load failed\n"; return 1; }

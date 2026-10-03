@@ -176,7 +176,11 @@ bool OnnxruntimeBackend::setup_execution_providers(const std::string& custom_con
         } else {
             // 白名单 EP：QNN / SNPE / XNNPACK / CoreML / DML / WEBNN /
             // WebGPU / AZURE / JS / NvTensorRtRtx（名字已规范化）
-            ep_options["device_id"] = std::to_string(ep_device_id);
+            // CoreML / XNNPACK 等会拒绝未知 provider option，所以只在用户
+            // 显式指定了非 0 设备时才透传 device_id。
+            if (ep_device_id != 0) {
+                ep_options["device_id"] = std::to_string(ep_device_id);
+            }
             session_options_.AppendExecutionProvider(ep_name, ep_options);
         }
         name_ = "onnxruntime/" + ep_name;
